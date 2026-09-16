@@ -1,0 +1,122 @@
+# FluxDeployer objects bridge OCM Resources → Flux HelmReleases.
+# For each Resource, the OCM controller:
+#   1. Watches the Resource's Snapshot (OCI artifact of the extracted chart)
+#   2. Creates an OCIRepository pointing to that Snapshot
+#   3. Creates a HelmRelease from the helmReleaseTemplate below
+#
+# The HelmRelease is always created in the FluxDeployer's namespace (greenhouse),
+# and helmReleaseTemplate fields map directly to helmv2.HelmReleaseSpec.
+#
+# Deployment order (via dependsOn — all HelmReleases live in greenhouse ns):
+#   cert-manager  → (no deps)
+#   ocm-controller → cert-manager
+#   kro           → (no deps)
+#   greenhouse    → cert-manager
+#
+# NOTE: flux2 FluxDeployer is NOT included here.
+# See flux-deployers-bootstrap-flux2.yaml for air-gapped fresh cluster installs.
+# Applying flux2 FluxDeployer on a cluster with Flux already running will
+# delete/recreate all Flux CRDs mid-flight, breaking all running controllers.
+
+# ---- cert-manager ----
+apiVersion: delivery.ocm.software/v1alpha1
+kind: FluxDeployer
+metadata:
+  name: cert-manager
+  namespace: greenhouse
+spec:
+  interval: 10m
+  sourceRef:
+    kind: Resource
+    name: cert-manager-chart
+    namespace: greenhouse
+  helmReleaseTemplate:
+    interval: 10m
+    targetNamespace: cert-manager
+    install:
+      createNamespace: true
+    values:
+      installCRDs: true
+---
+# ---- ocm-controller ----
+apiVersion: delivery.ocm.software/v1alpha1
+kind: FluxDeployer
+metadata:
+  name: ocm-controller
+  namespace: greenhouse
+spec:
+  interval: 10m
+  sourceRef:
+    kind: Resource
+    name: ocm-controller-chart
+    namespace: greenhouse
+  helmReleaseTemplate:
+    interval: 10m
+    targetNamespace: ocm-system
+    install:
+      createNamespace: true
+    dependsOn:
+      - name: cert-manager
+        namespace: greenhouse
+---
+# ---- kro ----
+apiVersion: delivery.ocm.software/v1alpha1
+kind: FluxDeployer
+metadata:
+  name: kro
+  namespace: greenhouse
+spec:
+  interval: 10m
+  sourceRef:
+    kind: Resource
+    name: kro-chart
+    namespace: greenhouse
+  helmReleaseTemplate:
+    interval: 10m
+    targetNamespace: kro-system
+    install:
+      createNamespace: true
+---
+# ---- greenhouse core ----
+# Requires:
+#   - Secret: greenhouse-values with keys mapped to Helm values (see below)
+#   - cert-manager installed and ready
+#
+# Create the values secret before applying:
+#   kubectl create secret generic greenhouse-values \
+#     --namespace greenhouse \
+#     --from-literal=values.yaml="$(cat <<'EOF'
+#   global:
+#     dnsDomain: <your-domain>
+#     oidc:
+#       issuer: <oidc-issuer-url>
+#       redirectURL: <redirect-url>
+#       clientID: <client-id>
+#       clientSecret: <client-secret>
+#   postgresqlng:
+#     global:
+#       registry: <container-registry>
+#   EOF
+#   )"
+apiVersion: delivery.ocm.software/v1alpha1
+kind: FluxDeployer
+metadata:
+  name: greenhouse
+  namespace: greenhouse
+spec:
+  interval: 10m
+  sourceRef:
+    kind: Resource
+    name: greenhouse-chart
+    namespace: greenhouse
+  helmReleaseTemplate:
+    interval: 10m
+    targetNamespace: greenhouse
+    dependsOn:
+      - name: cert-manager
+        namespace: greenhouse
+    valuesFrom:
+      - kind: Secret
+        name: greenhouse-values
+        valuesKey: values.yaml
+        optional: false
