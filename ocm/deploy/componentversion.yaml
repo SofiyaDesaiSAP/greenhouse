@@ -16,6 +16,6 @@ spec:
   version:
     semver: ">=0.16.1"
   repository:
-    url: ghcr.io/sofiya-mahamadjavid-desai_sap/greenhouse-ocm
+    url: ghcr.io/sofiyadesaisap/greenhouse-ocm
     secretRef:
       name: greenhouse-ocm-registry-creds

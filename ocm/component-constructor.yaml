@@ -142,6 +142,18 @@ components:
           type: OCIImage/v1
           imageReference: ${GREENHOUSE_IMAGE_REF}
 
+      # greenhouse-stack: thin Helm chart containing the kro ResourceGraphDefinition
+      # and GreenhouseStack Instance. ONE FluxDeployer deploys this chart; kro then
+      # creates all OCIRepositories + HelmReleases for the full stack.
+      - name: greenhouse-stack-chart
+        type: helmChart
+        version: ${GREENHOUSE_VERSION}
+        input:
+          type: file
+          path: charts/greenhouse-stack-${GREENHOUSE_VERSION}.tgz
+          mediaType: application/vnd.cncf.helm.chart.content.v1.tar+gzip
+          compress: false
+
   # -------------------------------------------------------------------------
   # Top-level product component — references core + all prerequisites
   # -------------------------------------------------------------------------

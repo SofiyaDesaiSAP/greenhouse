@@ -4,4 +4,4 @@ resources:
   - namespace.yaml
   - componentversion.yaml
   - resources.yaml
-  - flux-deployers.yaml
+  - flux-deployer.yaml

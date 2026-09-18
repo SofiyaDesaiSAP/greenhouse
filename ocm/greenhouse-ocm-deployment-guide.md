@@ -1,658 +1,441 @@
-# Greenhouse via OCM + Flux — Step-by-Step Deployment Guide
+# Greenhouse OCM + Flux Deployment Guide
 
----
-
-## Why OCM + Flux?
-
-You could deploy Greenhouse with raw `helm upgrade --install`. That works, but it requires
-you to be present on every cluster, carry the right kubeconfig and Helm repos, and run
-commands in the right order.
-
-OCM + Flux solve this differently:
-
-| Problem | OCM answer | Flux answer |
-|---|---|---|
-| Where do I store the charts? | Package into a versioned, signed bundle | — |
-| How do they get onto the cluster? | Push to an OCI registry | — |
-| Who installs the Helm releases? | — | Controllers running inside the cluster |
-| How do I track desired vs actual state? | — | Flux reconciles continuously |
-
-One sentence each:
-
-- **OCM (Open Component Model)** — a standard for bundling software artifacts
-  (Helm charts, container images, config) into a signed, versioned *component*
-  stored in an OCI registry.
-- **Flux** — Kubernetes controllers that watch OCI registries and apply Helm releases
-  or raw manifests automatically.
-
----
-
-## Greenhouse vs Keystone: different delivery model
-
-Keystone uses a **hybrid** approach:
-- OCM for versioning/signing the bundle
-- Flux `OCIRepository` + `HelmRelease` CRs that point *directly* to ghcr.io chart paths
-
-Greenhouse uses a **fully OCM-native** approach via `FluxDeployer`:
-- OCM controller pulls each chart from the bundle into a local Snapshot (OCI artifact)
-- `FluxDeployer` CRs auto-create `OCIRepository` + `HelmRelease` from those Snapshots
-- Flux reads from the *local OCM registry* (not directly from ghcr.io)
-
-This is more air-gap-friendly: once the OCM bundle is pulled to the cluster, no further
-external registry access is needed for chart delivery.
+Deploy Greenhouse on a Kubernetes cluster using OCM (Open Component Model) as the artifact distribution layer and Flux as the GitOps engine. A kro ResourceGraphDefinition (`GreenhouseStack`) ties the components together via a single parameterized CR instance.
 
 ---
 
 ## Architecture
 
 ```
-OCI Registry (ghcr.io/sofiya-mahamadjavid-desai_sap/greenhouse-ocm)
-  └── Component: github.com/cloudoperators/greenhouse v0.16.1
-        ├── componentRef: core
-        │     ├── greenhouse-chart   (helmChart)
-        │     └── greenhouse-image   (ociImage)
-        ├── componentRef: cert-manager
-        │     └── cert-manager-chart (helmChart)
-        ├── componentRef: flux
-        │     └── flux2-chart        (helmChart)
-        ├── componentRef: kro
-        │     └── kro-chart          (helmChart)
-        └── componentRef: ocm-controller
-              └── ocm-controller-chart (helmChart)
-                       │
-               ComponentVersion CR (greenhouse ns)
-                       │
-               Resource CRs → OCM Snapshots (local OCI artifacts, ocm-system)
-                       │
-               FluxDeployer CRs → OCIRepository + HelmRelease (auto-created in greenhouse ns)
-                       │
-               Flux helm-controller installs:
-                 cert-manager (namespace: cert-manager)
-                 ocm-controller (namespace: ocm-system)
-                 kro (namespace: kro-system)
-                 greenhouse (namespace: greenhouse)
-```
-
-**Installation order** (enforced by `dependsOn`):
-
-```
-flux [bootstrapped manually]
-     │
-cert-manager ──────────────────────┐
-     │                             │
-ocm-controller   kro               │
-                                   ▼
-                              greenhouse
+ghcr.io (OCM registry)
+    └─ greenhouse-bundle CTF
+           ├─ cert-manager chart
+           ├─ ocm-controller chart
+           ├─ kro chart
+           ├─ greenhouse chart
+           └─ greenhouse-stack chart (kro RGD)
+                        │
+               OCM controller pulls → OCM internal registry (ocm-system)
+                        │
+               Snapshots ──► OCIRepositories (Flux)
+                        │
+               FluxDeployer ──► HelmRelease: greenhouse-stack
+                        │
+                     kro processes RGD ──► GreenhouseStack CRD
+                        │
+               kubectl apply instance.yaml
+                        │
+               kro creates OCIRepositories + HelmReleases:
+                 cert-manager / ocm-controller / greenhouse
 ```
 
 ---
 
-## File inventory
+## Prerequisites
 
-| File | Purpose |
-|---|---|
-| `ocm/component-constructor.yaml` | OCM component definition — what charts go in the bundle |
-| `ocm/Makefile.ocm` | All commands wrapped as make targets |
-| `ocm/greenhouse-bundle.ctf/` | Local OCM CTF archive (built by `make build`) |
-| `ocm/charts/` | Downloaded Helm charts used during bundle build |
-| `ocm/deploy/namespace.yaml` | greenhouse namespace + registry creds comment |
-| `ocm/deploy/componentversion.yaml` | ComponentVersion CR — watches OCM registry |
-| `ocm/deploy/resources.yaml` | Resource CRs — one per chart resource in the bundle |
-| `ocm/deploy/flux-deployers.yaml` | FluxDeployer CRs — auto-creates OCIRepository + HelmRelease per chart |
-| `ocm/deploy/flux-deployers-bootstrap-flux2.yaml` | flux2 FluxDeployer (for fresh air-gapped clusters ONLY) |
-| `ocm/deploy/kustomization.yaml` | Groups all deploy manifests |
-| `ocm/deploy/greenhouse-values-example.yaml` | Minimal working values for greenhouse chart |
+| Tool | Min version | Install |
+|---|---|---|
+| `kubectl` | 1.28+ | |
+| `helm` | 3.14+ | |
+| `flux` CLI | 2.x | |
+| `ocm` CLI | 0.48+ | |
+| GitHub PAT | `read:packages` for pull, `write:packages` to push | |
 
----
-
-## Bootstrapping problem and solution
-
-There is a chicken-and-egg problem with this stack:
-
-- To use `FluxDeployer`, you need the OCM controller
-- OCM controller needs cert-manager (webhook TLS)
-- cert-manager is installed *by* the cert-manager FluxDeployer
-
-**Solution**: manually bootstrap Flux, cert-manager, and OCM controller *once* via
-`helm install`. This is done by the `install-ocm-controller` make target. After that,
-the FluxDeployer CRs take over and manage subsequent installs/upgrades — including
-cert-manager and ocm-controller (they will adopt the manually installed releases).
-
-Because cert-manager and ocm-controller are already installed when the FluxDeployers
-are applied, those FluxDeployers perform an upgrade (not install) — which is safe.
-
----
-
-## Concepts
-
-### ComponentVersion
-
-A `ComponentVersion` CR watches the OCM registry for a specific component name + semver.
-When the OCM controller resolves the version, it downloads the component descriptor and
-makes all bundled resources accessible to `Resource` CRs.
-
-```yaml
-apiVersion: delivery.ocm.software/v1alpha1
-kind: ComponentVersion
-metadata:
-  name: greenhouse
-  namespace: greenhouse
-spec:
-  component: github.com/cloudoperators/greenhouse
-  version:
-    semver: ">=0.16.1"
-  repository:
-    url: ghcr.io/sofiya-mahamadjavid-desai_sap/greenhouse-ocm
-    secretRef:
-      name: greenhouse-ocm-registry-creds
-```
-
-### Resource
-
-A `Resource` CR extracts a single chart from the ComponentVersion (navigating the
-component reference tree via `referencePath`). The OCM controller materialises it as
-a local OCI artifact called a **Snapshot** — stored in the OCM controller's internal
-OCI registry in `ocm-system`.
-
-```yaml
-apiVersion: delivery.ocm.software/v1alpha1
-kind: Resource
-metadata:
-  name: greenhouse-chart
-  namespace: greenhouse
-spec:
-  sourceRef:
-    kind: ComponentVersion
-    name: greenhouse
-    resourceRef:
-      name: greenhouse-chart
-      referencePath:
-        - name: core    # navigate into the "core" componentReference
-```
-
-### FluxDeployer
-
-A `FluxDeployer` watches a `Resource`'s Snapshot and auto-creates:
-1. An `OCIRepository` CR pointing to that Snapshot in the OCM internal registry
-2. A `HelmRelease` CR with the fields you specify in `helmReleaseTemplate`
-
-Both the `OCIRepository` and `HelmRelease` are created in the FluxDeployer's own
-namespace (always `greenhouse` here). `targetNamespace` controls where the chart
-*installs its resources*.
-
-```yaml
-helmReleaseTemplate:          # fields are helmv2.HelmReleaseSpec — NOT wrapped in spec:
-  interval: 10m
-  targetNamespace: greenhouse
-  dependsOn:
-    - name: cert-manager
-      namespace: greenhouse   # dependsOn must also reference greenhouse namespace
-```
-
-### TLS secret cross-namespace
-
-The OCM controller creates `ocm-registry-tls-certs` in `ocm-system`. The
-`OCIRepository` CRs that FluxDeployer creates in `greenhouse` namespace also need
-those TLS certs to connect to the OCM internal registry. Copy this secret to
-`greenhouse` after the OCM controller starts.
-
----
-
-## Prerequisites (tools)
+Set before running anything:
 
 ```bash
-# Check you have all required tools
-ocm version     # >= 0.11
-helm version    # >= 3.12
-kubectl version
-flux version    # >= 2.0
+export GITHUB_TOKEN=ghp_...          # GitHub PAT
+export KUBECONFIG=/path/to/kubeconfig
 ```
 
-Install if missing:
-
-```bash
-# OCM CLI
-curl -sfL https://ocm.software/install-cli.sh | bash
-
-# Flux CLI
-brew install fluxcd/tap/flux
-
-# Helm
-brew install helm
-```
+All `make` commands run from the `greenhouse/ocm/` directory.
 
 ---
 
-## Step 1 — Build and push the OCM bundle
+## Step 1 — Prepare the OCM Bundle
 
-> **Skip this step if the bundle is already in the registry.**
-> The bundle for v0.16.1 is already at `ghcr.io/sofiya-mahamadjavid-desai_sap/greenhouse-ocm`.
-> Run `make verify` to confirm.
-
-```bash
-cd greenhouse   # the cloned greenhouse repo
-export GITHUB_TOKEN=<your-github-pat>
-
-# Package the greenhouse chart (resolves file:// deps + OCI)
-make -f ocm/Makefile.ocm package
-
-# Fetch the ocm-controller chart (needs v-prefix OCI tag)
-make -f ocm/Makefile.ocm fetch-prereqs
-
-# Build the OCM CTF archive
-make -f ocm/Makefile.ocm build
-
-# Verify what's inside
-make -f ocm/Makefile.ocm verify
-
-# Push to ghcr.io
-make -f ocm/Makefile.ocm push GITHUB_TOKEN=$GITHUB_TOKEN
-```
-
-**What the build creates:**
-
-```
-github.com/cloudoperators/greenhouse v0.16.1        (top-level product)
-  ├── github.com/cloudoperators/greenhouse/core                v0.16.1
-  │     ├── greenhouse-chart   helmChart
-  │     └── greenhouse-image   ociImage → ghcr.io/cloudoperators/greenhouse:v0.16.1
-  ├── github.com/cloudoperators/greenhouse/prerequisites/cert-manager   v1.16.1
-  ├── github.com/cloudoperators/greenhouse/prerequisites/flux           v2.15.0
-  ├── github.com/cloudoperators/greenhouse/prerequisites/kro            v0.9.4
-  └── github.com/cloudoperators/greenhouse/prerequisites/ocm-controller v0.33.0
-```
-
-> **Note on OCM label names:** OCM component labels must use valid Kubernetes label key
-> format (`prefix/name`, max 1 slash). Multi-slash names like
-> `github.com/cloudoperators/greenhouse/version` will cause an
-> `Invalid value` error in the OCM controller. Use `cloudoperators.github.com/role` style.
-
-> **Note on chart version:** `helm package` must use `--version $(GREENHOUSE_VERSION)` (not
-> `$(GREENHOUSE_CHART_VERSION)`) because the OCM controller tags Snapshots with the
-> *component version* (`0.16.1`), and Flux enforces a strict version match on the chartRef.
-
----
-
-## Step 2 — Get the cluster kubeconfig
-
-Place the kubeconfig for the target cluster at `greenhouse-kubeconfig.yaml`
-(in the `sci-k8s-cluster` root). This is already present as `greenhouse-kubeconfig.yaml`.
-
-```bash
-# Verify cluster access
-KUBECONFIG=greenhouse-kubeconfig.yaml kubectl get nodes
-```
-
-All subsequent steps run from `greenhouse/ocm/` with
-`SHOOT_KUBECONFIG=../../greenhouse-kubeconfig.yaml` (the Makefile.ocm default).
-
----
-
-## Step 3 — Bootstrap Flux on the cluster
+> Skip if the bundle is already pushed to `ghcr.io/sofiyadesaisap/greenhouse-ocm`.
 
 ```bash
 cd greenhouse/ocm
-make bootstrap-flux
+
+# 1a. Package the greenhouse Helm chart (resolves file:// deps + OCI)
+make -f Makefile.ocm package
+
+# 1b. Package the greenhouse-stack kro chart
+make -f Makefile.ocm package-stack
+
+# 1c. Fetch ocm-controller chart (v-prefix OCI tag requires manual pull)
+make -f Makefile.ocm fetch-prereqs
+
+# 1d. Build the OCM CTF archive
+make -f Makefile.ocm build
+
+# 1e. Verify the archive contains all components
+make -f Makefile.ocm verify
 ```
 
-This runs `flux install` and waits for source-controller and helm-controller to be Ready.
-
-```bash
-# Verify
-KUBECONFIG=../../greenhouse-kubeconfig.yaml kubectl get pods -n flux-system
+**Screenshot placeholder — `make verify` output:**
+```
+[SCREENSHOT: make verify showing all 6 component versions present in the CTF]
 ```
 
-Expected: source-controller, helm-controller, kustomize-controller, notification-controller
-all in Running state.
-
----
-
-## Step 4 — Grant helm-controller cluster-admin RBAC
-
-The default Flux `helm-controller` ServiceAccount only has namespace-scoped permissions.
-Installing CRDs and ClusterRoles (cert-manager, kro, ocm-controller) requires cluster-admin.
-
 ```bash
-make grant-helm-rbac
+# 1f. Push to ghcr.io
+make -f Makefile.ocm push GITHUB_TOKEN=$GITHUB_TOKEN
 ```
 
-> **Why this is required:** cert-manager installs `ValidatingWebhookConfiguration`,
-> `ClusterRole`, `ClusterRoleBinding`, and a number of CRDs. Without cluster-admin,
-> the HelmRelease will fail with `admission webhook denied` or RBAC errors.
-
----
-
-## Step 5 — Install prometheus-operator CRDs
-
-The greenhouse chart renders `PrometheusRule` objects regardless of whether monitoring
-is enabled in values. If the `PrometheusRule` CRD doesn't exist, the helm install fails.
-
-```bash
-make install-prometheus-crds
+**Screenshot placeholder — successful push:**
 ```
-
-This installs `prometheus-operator-crds` into the `monitoring` namespace.
-
----
-
-## Step 6 — Bootstrap cert-manager and OCM controller
-
-Install both via helm directly (one-time bootstrap, before FluxDeployers are applied):
-
-```bash
-make install-ocm-controller
-```
-
-This target:
-1. Installs cert-manager v1.16.1 in `cert-manager` namespace with `installCRDs=true`
-2. Installs OCM controller v0.33.0 in `ocm-system` namespace
-3. Waits for the OCM controller to create the TLS secret `ocm-registry-tls-certs`
-
-Wait for both to be healthy before continuing:
-
-```bash
-KUBECONFIG=../../greenhouse-kubeconfig.yaml kubectl get pods -n cert-manager
-KUBECONFIG=../../greenhouse-kubeconfig.yaml kubectl get pods -n ocm-system
+[SCREENSHOT: make push output showing all components transferred to ghcr.io]
 ```
 
 ---
 
-## Step 7 — Create namespace and secrets
+## Step 2 — Prepare `greenhouse-values.yaml`
 
-### 7a. Create the greenhouse namespace
-
-```bash
-make create-greenhouse-ns
-```
-
-### 7b. Copy the OCM TLS secret to greenhouse namespace
-
-The OCM controller's internal OCI registry uses TLS. FluxDeployer-created
-`OCIRepository` objects in the `greenhouse` namespace need this cert to connect.
+Copy the example and edit for your environment:
 
 ```bash
-make copy-tls-secret
-```
-
-Verify:
-
-```bash
-KUBECONFIG=../../greenhouse-kubeconfig.yaml \
-  kubectl get secret ocm-registry-tls-certs -n greenhouse
-```
-
-### 7c. Create registry credentials secret
-
-This lets the `ComponentVersion` controller pull the greenhouse bundle from ghcr.io.
-
-```bash
-export GITHUB_TOKEN=<your-github-pat>
-make create-registry-secret
-```
-
-> **Secret type must be `docker-registry`**, not `generic`. This stores credentials
-> in `.dockerconfigjson`, the format OCI clients expect.
-
-### 7d. Create the greenhouse values secret
-
-```bash
-# Copy the example and edit for your environment
 cp deploy/greenhouse-values-example.yaml greenhouse-values.yaml
-# Edit as needed, then:
-make create-values-secret
 ```
 
-**Minimum required values** (see `deploy/greenhouse-values-example.yaml` for the full
-working minimal config):
+Minimal working config (no ingress, no OIDC, no postgres):
 
 ```yaml
 global:
-  dnsDomain: greenhouse.example.com   # your DNS domain
+  dnsDomain: greenhouse.example.com
   oidc:
-    enabled: false                    # disable for test/dev
+    enabled: false
+  ingress:
+    enabled: false
+  postgresql:
+    enabled: false
+  registry: ghcr.io
+  monitoring:
+    enabled: false
   dex:
-    backend: kubernetes               # MUST be "kubernetes" or "postgres" — NOT "memory"
-```
+    backend: kubernetes   # NOT postgres (needs pguser secret) and NOT memory (invalid)
 
-> **Important — `dex.backend`:** Using `memory` is invalid. Using `postgres` without
-> setting `postgresqlUsername` creates a secret name with a trailing hyphen
-> (`pguser-`) which is invalid. Use `kubernetes` for dev/test.
+idproxy:
+  enabled: false
+corsProxy:
+  enabled: false
+authz:
+  enabled: false
+controllerManager:
+  enabled: true
+  replicaCount: 1
+  monitoring:
+    enabled: false
 
-> **Important — `PrometheusRule`:** The greenhouse chart always renders
-> `PrometheusRule` objects regardless of `monitoring.enabled`. Install the
-> CRDs (step 5) before applying.
-
----
-
-## Step 8 — Apply OCM + Flux manifests
-
-```bash
-make deploy-apply
-```
-
-This runs `kubectl apply -k deploy/` which applies:
-- `namespace.yaml` — greenhouse namespace
-- `componentversion.yaml` — ComponentVersion CR (watches ghcr.io bundle)
-- `resources.yaml` — Resource CRs (one per chart: cert-manager, flux2, kro, ocm-controller, greenhouse)
-- `flux-deployers.yaml` — FluxDeployer CRs (cert-manager, ocm-controller, kro, greenhouse)
-
-> **flux2 FluxDeployer is excluded** from the main kustomization. Flux is already
-> installed (step 3). The flux2 FluxDeployer is in a separate file
-> `deploy/flux-deployers-bootstrap-flux2.yaml` for air-gapped fresh installs only.
-
-Verify the ComponentVersion becomes Ready:
-
-```bash
-KUBECONFIG=../../greenhouse-kubeconfig.yaml \
-  kubectl wait componentversion/greenhouse -n greenhouse \
-  --for=condition=Ready --timeout=120s
+postgresqlng:
+  enabled: false
+dashboard:
+  enabled: false
 ```
 
 ---
 
-## Step 9 — Watch Flux reconcile
+## Step 3 — Bootstrap the Cluster
+
+Run each step once on a fresh cluster. Individual targets are idempotent — safe to re-run if something fails mid-way.
+
+### 3a. Bootstrap Flux
 
 ```bash
-make deploy-watch
+make -f Makefile.ocm bootstrap-flux
 ```
 
-Expected progression:
+> Skips reinstall if Flux is already running. Only installs from scratch.
 
+**Screenshot placeholder:**
 ```
-NAME            READY     STATUS
-cert-manager    Unknown   Running 'install' action...
-kro             Unknown   Running 'install' action...
-ocm-controller  False     dependency 'greenhouse/cert-manager' is not ready
-
-cert-manager    True      Helm install succeeded, revision 1
-kro             True      Helm install succeeded, revision 1
-ocm-controller  True      Helm install succeeded, revision 1
-
-greenhouse      Unknown   Running 'install' action...
-greenhouse      True      Helm install succeeded, revision 1
+[SCREENSHOT: make bootstrap-flux output showing flux install completing and rollout status]
 ```
 
-While greenhouse is installing, watch the init behaviour:
+### 3b. Install kro
 
 ```bash
-KUBECONFIG=../../greenhouse-kubeconfig.yaml kubectl get pods -n greenhouse -w
+make -f Makefile.ocm install-kro
 ```
 
-You should see the `greenhouse-controller-manager` pod become Running after the
-cert-manager webhook is ready.
+### 3c. Grant helm-controller RBAC
+
+Required for Flux to install CRDs and ClusterRoles:
+
+```bash
+make -f Makefile.ocm grant-helm-rbac
+```
+
+### 3d. Install prometheus-operator CRDs
+
+The greenhouse chart hardcodes `PrometheusRule` regardless of monitoring settings:
+
+```bash
+make -f Makefile.ocm install-prometheus-crds
+```
+
+### 3e. Install OCM controller
+
+cert-manager is installed first as a dependency, then the OCM controller:
+
+```bash
+make -f Makefile.ocm install-ocm-controller GITHUB_TOKEN=$GITHUB_TOKEN
+```
+
+> **Note:** `--set tlsCert.generateTlsCert=true` is required — the chart default is `false`. Without it, the OCM registry TLS secret is never created and pods stay in `ContainerCreating`.
+
+**Screenshot placeholder:**
+```
+[SCREENSHOT: make install-ocm-controller completing — cert-manager pods + ocm-controller pods Running + "TLS secret exists."]
+```
 
 ---
 
-## Step 10 — Verify greenhouse is running
+## Step 4 — Create Namespace and Secrets
 
 ```bash
-make deploy-status
+make -f Makefile.ocm create-greenhouse-ns
+
+# Registry pull credentials for ghcr.io
+make -f Makefile.ocm create-registry-secret GITHUB_TOKEN=$GITHUB_TOKEN
+
+# Copy OCM TLS cert from ocm-system → greenhouse namespace
+# (Flux OCIRepositories in greenhouse need it to pull from the OCM internal registry)
+make -f Makefile.ocm copy-tls-secret
+
+# Upload greenhouse-values.yaml as a K8s secret
+make -f Makefile.ocm create-values-secret
 ```
-
-Check HelmReleases and pods across all namespaces:
-
-```bash
-KUBECONFIG=../../greenhouse-kubeconfig.yaml kubectl get helmrelease -n greenhouse
-# Expected: cert-manager, kro, ocm-controller, greenhouse — all READY True
-
-KUBECONFIG=../../greenhouse-kubeconfig.yaml kubectl get pods -n greenhouse
-# Expected: greenhouse-controller-manager Running (plus any enabled subcomponents)
-
-KUBECONFIG=../../greenhouse-kubeconfig.yaml kubectl get pods -n cert-manager
-# Expected: cert-manager-*, cert-manager-cainjector-*, cert-manager-webhook-* Running
-
-KUBECONFIG=../../greenhouse-kubeconfig.yaml kubectl get pods -n ocm-system
-# Expected: ocm-controller-* Running
-
-KUBECONFIG=../../greenhouse-kubeconfig.yaml kubectl get pods -n kro-system
-# Expected: kro-* Running
-```
-
-Verify greenhouse CRDs are installed:
-
-```bash
-KUBECONFIG=../../greenhouse-kubeconfig.yaml \
-  kubectl get crd | grep greenhouse
-```
-
-You should see CRDs like `clusters.greenhouse.sap`, `organizations.greenhouse.sap`, etc.
 
 ---
 
-## Step 11 — All-in-one deploy (fresh cluster)
-
-For a fully automated fresh cluster deploy:
+## Step 5 — Apply OCM Manifests
 
 ```bash
-export GITHUB_TOKEN=<your-github-pat>
-cp deploy/greenhouse-values-example.yaml greenhouse-values.yaml
-# edit greenhouse-values.yaml as needed, then:
-make deploy-full
+make -f Makefile.ocm deploy-apply
 ```
 
-`deploy-full` runs all steps in order:
-1. `bootstrap-flux`
-2. `grant-helm-rbac`
-3. `install-prometheus-crds`
-4. `install-ocm-controller` (cert-manager + OCM controller bootstrap)
-5. `create-greenhouse-ns`
-6. `create-registry-secret`
-7. `copy-tls-secret`
-8. `create-values-secret`
-9. `deploy-apply`
+This creates:
+- `ComponentVersion` greenhouse — points OCM controller at the bundle in ghcr.io
+- `Resource` CRs — one per chart, trigger OCM to sync each chart into the internal registry as a `Snapshot`
+- `FluxDeployer` greenhouse-stack — deploys the kro RGD chart via Flux
+
+**Screenshot placeholder:**
+```
+[SCREENSHOT: make deploy-apply output — namespace/componentversion/fluxdeployer/resource lines all showing "created" or "configured"]
+```
+
+Watch OCM + Flux objects become ready (~2–3 min):
+
+```bash
+make -f Makefile.ocm deploy-status
+```
+
+**Screenshot placeholder:**
+```
+[SCREENSHOT: make deploy-status — ComponentVersion Ready, all Resources Ready, FluxDeployer Ready, greenhouse-stack HelmRelease Ready]
+```
 
 ---
 
-## Upgrade flow
+## Step 6 — Deploy the GreenhouseStack Instance
 
-To upgrade greenhouse to a new version:
+Wait for kro to process the RGD and create the `GreenhouseStack` CRD, then apply the instance:
 
-1. **Bump versions in Makefile.ocm:**
+```bash
+make -f Makefile.ocm deploy-instance
+```
 
-   ```makefile
-   GREENHOUSE_VERSION        ?= 0.17.0
-   GREENHOUSE_CHART_VERSION  ?= 0.24.0
-   ```
+The instance references the OCM Snapshot paths. To get the current paths from a live cluster:
 
-2. **Rebuild and push the bundle:**
+```bash
+make -f Makefile.ocm snapshot-urls
+```
 
-   ```bash
-   make package build push GITHUB_TOKEN=$GITHUB_TOKEN
-   ```
+kro then creates OCIRepositories and HelmReleases for:
+- `cert-manager` → installs in `cert-manager` namespace
+- `ocm-controller` → installs in `ocm-system` namespace (depends on cert-manager)
+- `greenhouse` → installs in `greenhouse` namespace (depends on cert-manager + ocm-controller)
 
-3. **Update the ComponentVersion semver in deploy/componentversion.yaml:**
+Watch the HelmReleases reconcile:
 
-   ```yaml
-   version:
-     semver: ">=0.17.0"
-   ```
+```bash
+make -f Makefile.ocm deploy-watch
+```
 
-4. **Apply:**
+**Screenshot placeholder:**
+```
+[SCREENSHOT: make deploy-watch — cert-manager True, ocm-controller True, greenhouse True in order]
+```
 
-   ```bash
-   make deploy-apply
-   ```
+---
 
-   Flux detects the new ComponentVersion → OCM controller downloads the new charts →
-   FluxDeployer updates the OCIRepositories → Flux runs `helm upgrade`. No manual
-   intervention on the cluster.
+## Step 7 — Verify
+
+```bash
+make -f Makefile.ocm deploy-status
+```
+
+**Screenshot placeholder — final full status:**
+```
+[SCREENSHOT: make deploy-status final state]
+```
+
+Expected final state:
+
+```
+ComponentVersion:  greenhouse   Ready=True   0.16.1
+Resources:         all 5        Ready=True
+FluxDeployer:      greenhouse-stack  Ready=True
+HelmReleases:      cert-manager, ocm-controller, greenhouse, greenhouse-stack  all Ready=True
+GreenhouseStack:   greenhouse   ACTIVE  Ready=True
+Pods (greenhouse): controller-manager x3, cors-proxy x2, webhook x2 — all Running
+Pods (cert-manager): cert-manager, cainjector, webhook — Running
+Pods (ocm-system):   ocm-controller, registry — Running
+Pods (kro-system):   kro — Running
+Pods (flux-system):  helm-controller, source-controller, kustomize-controller, notification-controller — Running
+```
+
+**Screenshot placeholder:**
+```
+[SCREENSHOT: kubectl get pods -n greenhouse showing all Running]
+```
+
+```bash
+# Check GreenhouseStack instance
+kubectl get greenhousestack -n greenhouse
+```
+
+**Screenshot placeholder:**
+```
+[SCREENSHOT: kubectl get greenhousestack showing STATE=ACTIVE READY=True]
+```
 
 ---
 
 ## Troubleshooting
 
+### OCM controller pods stuck in `ContainerCreating`
+
+**Symptom:** `MountVolume.SetUp failed for volume "certificates": secret "ocm-registry-tls-certs" not found`
+
+**Cause:** `tlsCert.generateTlsCert` defaults to `false` in the OCM controller chart — cert-manager never receives a `Certificate` CR to create the secret.
+
+**Fix:** The Makefile passes `--set tlsCert.generateTlsCert=true`. If installing manually, include:
 ```bash
-# Overall status
-make deploy-status
-
-# ComponentVersion events
-KUBECONFIG=../../greenhouse-kubeconfig.yaml \
-  kubectl describe componentversion greenhouse -n greenhouse
-
-# Resource events
-KUBECONFIG=../../greenhouse-kubeconfig.yaml \
-  kubectl describe resource greenhouse-chart -n greenhouse
-
-# FluxDeployer events (shows OCIRepository + HelmRelease it created)
-KUBECONFIG=../../greenhouse-kubeconfig.yaml \
-  kubectl describe fluxdeployer greenhouse -n greenhouse
-
-# HelmRelease events
-KUBECONFIG=../../greenhouse-kubeconfig.yaml \
-  kubectl describe helmrelease greenhouse -n greenhouse
-
-# Force immediate reconciliation
-make deploy-reconcile
-
-# Flux controller logs
-KUBECONFIG=../../greenhouse-kubeconfig.yaml \
-  kubectl logs -n flux-system deploy/helm-controller --tail=50
-KUBECONFIG=../../greenhouse-kubeconfig.yaml \
-  kubectl logs -n flux-system deploy/source-controller --tail=50
-
-# OCM controller logs
-KUBECONFIG=../../greenhouse-kubeconfig.yaml \
-  kubectl logs -n ocm-system deploy/ocm-controller --tail=50
+helm upgrade --install ocm-controller ... --set tlsCert.generateTlsCert=true
 ```
-
-### Common failure modes
-
-| Symptom | Likely cause | Fix |
-|---|---|---|
-| `ComponentVersion` stays `NotReady` | Wrong registry URL or bad credentials | Check `greenhouse-ocm-registry-creds` secret exists in `greenhouse` ns |
-| `ComponentVersion` Not Ready: `semver no match` | Bundle not pushed or version mismatch | Run `make push` or check semver constraint |
-| `Resource` stays `NotReady` | `referencePath` wrong (wrong component ref name) | Check `referencePath` in resources.yaml matches component-constructor componentReferences |
-| `FluxDeployer` creates OCIRepository but it fails TLS | TLS cert not copied to greenhouse ns | Run `make copy-tls-secret` |
-| `HelmRelease` cert-manager fails: `cannot patch ClusterRole` | helm-controller lacks cluster-admin | Run `make grant-helm-rbac` |
-| `HelmRelease` greenhouse fails: `no matches for kind PrometheusRule` | prometheus-operator CRDs missing | Run `make install-prometheus-crds` |
-| `HelmRelease` greenhouse fails: `dex backend "memory"` | invalid dex backend value | Set `global.dex.backend: kubernetes` in values |
-| `HelmRelease` greenhouse fails: invalid secret name | `postgres` backend without `postgresqlUsername` | Use `dex.backend: kubernetes` or set username |
-| `HelmRelease` stuck in terminal error | Previous failed install left stale Helm state | Run `make flux-fix APP=greenhouse` |
-| OCM component labels error: `Invalid value` | Label name contains more than one slash | Use `prefix/name` format (e.g. `cloudoperators.github.com/role`) |
-| Chart version mismatch: Snapshot/HelmRelease not Ready | Chart packaged with wrong version | Package with `--version $(GREENHOUSE_VERSION)` not chart version |
-| `HelmRelease` dependsOn not satisfied | Dependency HelmRelease not yet Ready | Wait for cert-manager to become Ready first |
-
-### Recovery: HelmRelease stuck in terminal failed state
-
-```bash
-# For any stuck HelmRelease:
-make flux-fix APP=greenhouse
-# or:
-make flux-fix APP=cert-manager
-```
-
-This removes the stuck finalizer, clears the stale Helm release secret, restarts
-helm-controller, and re-applies the deploy manifests.
 
 ---
 
-## Comparison with Keystone deployment
+### cert-manager install fails: CRD ownership conflict
 
-| Dimension | Keystone (OCM + Flux) | Greenhouse (OCM + FluxDeployer) |
-|---|---|---|
-| Chart delivery mechanism | Flux OCIRepository → ghcr.io directly | FluxDeployer → OCM Snapshot → local registry |
-| Who creates OCIRepository + HelmRelease? | You (manually apply flux-helmreleases.yaml) | OCM controller via FluxDeployer (auto-created) |
-| Air-gap friendly? | Needs ghcr.io access per chart | Yes — after initial bundle pull, no external registry needed |
-| Number of OCM components | 1 flat component | 1 top-level + 5 sub-components (nested) |
-| Bootstrap needed? | Flux only | Flux + cert-manager + OCM controller (manual helm install) |
-| TLS secret copy needed? | No | Yes — OCM internal registry TLS cert must be in greenhouse ns |
+**Symptom:**
+```
+Error: unable to continue with install: CustomResourceDefinition "certificaterequests.cert-manager.io"
+exists ... annotation validation error: key "meta.helm.sh/release-name" must equal "cert-manager":
+current value is "cert-manager-cert-manager"
+```
+
+**Cause:** Orphaned cert-manager CRDs from a previous partial install under a different release name.
+
+**Fix:**
+```bash
+kubectl delete crd \
+  certificaterequests.cert-manager.io \
+  certificates.cert-manager.io \
+  challenges.acme.cert-manager.io \
+  clusterissuers.cert-manager.io \
+  issuers.cert-manager.io \
+  orders.acme.cert-manager.io
+```
+
+---
+
+### kro RGD stays `Inactive`
+
+**Symptom:**
+```
+type mismatch: expression "schema.spec.tlsSecretName" returns type "__type_schema.spec.tlsSecretName"
+but expected "string"
+```
+
+**Cause:** kro v0.9.4 uses **SimpleSchema** for field type declarations. The old `{type: string}` object format causes kro to fail type inference, returning opaque `__type_schema.*` types that cannot be used in CEL expressions.
+
+**Fix:** Schema fields must use inline type strings:
+```yaml
+# WRONG (kro v0.9.x)
+spec:
+  fieldName:
+    type: string
+
+# CORRECT (SimpleSchema)
+spec:
+  fieldName: "string"
+```
+
+Status fields must use CEL expressions projecting from resources:
+```yaml
+# WRONG
+status:
+  someField:
+    type: string
+
+# CORRECT
+status:
+  someField: "${resourceId.status.someField}"
+```
+
+---
+
+### `flux install` fails: `timeout waiting for Namespace/flux-system status: NotFound`
+
+**Cause:** `flux uninstall` was called and the namespace is still terminating, or there is a timing issue.
+
+**Fix:** Wait 30s and retry `make bootstrap-flux`. The target now detects if Flux is already installed and skips the uninstall entirely.
+
+> **Never call `make deploy-full` on a cluster where steps have already been partially applied.** It was designed for a completely fresh cluster. For incremental installs, call individual targets.
+
+---
+
+### Stuck HelmRelease
+
+```bash
+# Recover a stuck HelmRelease (replace cert-manager with the stuck release name)
+make -f Makefile.ocm flux-fix APP=cert-manager
+```
+
+---
+
+### Force re-pull from ghcr.io after pushing a new bundle
+
+```bash
+# Force OCM to reconcile ComponentVersion + all Resource CRs
+make -f Makefile.ocm deploy-reconcile-ocm
+
+# Then watch for Snapshots to update
+make -f Makefile.ocm deploy-status
+```
+
+> **Note:** OCM caches by tag. If you push the same version tag with new chart content, OCM will serve the cached version. Bump `GREENHOUSE_VERSION` to guarantee a cache-miss, or delete the relevant Snapshot to force a re-pull.
+
+---
+
+## Upgrading
+
+1. Update version variables in `Makefile.ocm`
+2. `make package package-stack build push GITHUB_TOKEN=$GITHUB_TOKEN`
+3. `make deploy-reconcile-ocm` — OCM pulls the new bundle and updates Snapshots
+4. Update `deploy/instance.yaml` snapshot paths with `make snapshot-urls`
+5. `kubectl apply -f deploy/instance.yaml`
+
+---
+
+## Known Issues
+
+| Issue | Workaround |
+|---|---|
+| Two cert-manager installs after `deploy-full` on a cluster where cert-manager was already manually installed | The bootstrap target (`install-cert-manager`) installs under release name `cert-manager`; the GreenhouseStack instance installs under `cert-manager-cert-manager`. Both are functional but redundant. Remove the manually-installed one with `helm uninstall cert-manager -n cert-manager`. |
+| kro `GreenhouseStack` status fields not reflecting HelmRelease conditions | The status CEL expressions use `conditions[0]` which may not always be the `Ready` condition — cosmetic only, does not affect deployment. |

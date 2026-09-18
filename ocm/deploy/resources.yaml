@@ -1,14 +1,16 @@
 # Resource objects extract individual Helm charts from the greenhouse OCM bundle.
-# The OCM controller creates a Snapshot OCI artifact for each Resource, which
-# FluxDeployer then uses as the chart source.
+# The OCM controller creates a Snapshot OCI artifact for each Resource.
 #
 # referencePath navigates the componentReference tree:
 #   greenhouse (top-level)
-#     └─ core          → greenhouse-chart, greenhouse-image
-#     └─ cert-manager  → cert-manager-chart
-#     └─ flux          → flux2-chart
-#     └─ kro           → kro-chart
-#     └─ ocm-controller → ocm-controller-chart
+#     └─ core            → greenhouse-chart, greenhouse-stack-chart, greenhouse-image
+#     └─ cert-manager    → cert-manager-chart
+#     └─ kro             → kro-chart
+#     └─ ocm-controller  → ocm-controller-chart
+#
+# The greenhouse-stack-chart Snapshot is deployed via the ONE FluxDeployer (flux-deployer.yaml).
+# That Helm chart installs the kro RGD + Instance, which then creates all OCIRepositories
+# and HelmReleases for cert-manager, ocm-controller, and greenhouse.
 
 # ---- cert-manager ----
 apiVersion: delivery.ocm.software/v1alpha1
@@ -26,23 +28,6 @@ spec:
       name: cert-manager-chart
       referencePath:
         - name: cert-manager
----
-# ---- flux2 ----
-apiVersion: delivery.ocm.software/v1alpha1
-kind: Resource
-metadata:
-  name: flux2-chart
-  namespace: greenhouse
-spec:
-  interval: 10m
-  sourceRef:
-    kind: ComponentVersion
-    name: greenhouse
-    namespace: greenhouse
-    resourceRef:
-      name: flux2-chart
-      referencePath:
-        - name: flux
 ---
 # ---- kro ----
 apiVersion: delivery.ocm.software/v1alpha1
@@ -78,7 +63,7 @@ spec:
       referencePath:
         - name: ocm-controller
 ---
-# ---- greenhouse core ----
+# ---- greenhouse core chart ----
 apiVersion: delivery.ocm.software/v1alpha1
 kind: Resource
 metadata:
@@ -92,5 +77,25 @@ spec:
     namespace: greenhouse
     resourceRef:
       name: greenhouse-chart
+      referencePath:
+        - name: core
+---
+# ---- greenhouse-stack chart (kro RGD + Instance) ----
+# The ONE FluxDeployer in flux-deployer.yaml deploys this chart.
+# When installed, it creates the kro RGD + GreenhouseStack Instance.
+# kro then creates OCIRepositories + HelmReleases for cert-manager, ocm-controller, greenhouse.
+apiVersion: delivery.ocm.software/v1alpha1
+kind: Resource
+metadata:
+  name: greenhouse-stack-chart
+  namespace: greenhouse
+spec:
+  interval: 10m
+  sourceRef:
+    kind: ComponentVersion
+    name: greenhouse
+    namespace: greenhouse
+    resourceRef:
+      name: greenhouse-stack-chart
       referencePath:
         - name: core

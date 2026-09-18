@@ -1,0 +1,27 @@
+# GreenhouseStack Instance — applied SEPARATELY after kro has processed the RGD
+# and created the GreenhouseStack CRD.
+#
+# Apply with: make -f Makefile.ocm deploy-instance
+# (waits for CRD readiness automatically)
+#
+# To upgrade: update snapshot paths + versions here, then re-apply.
+# Run `make snapshot-urls` to get current sha values from the live cluster.
+apiVersion: kro.run/v1alpha1
+kind: GreenhouseStack
+metadata:
+  name: greenhouse
+  namespace: greenhouse
+spec:
+  registryHost: "registry.ocm-system.svc.cluster.local:5000"
+
+  certManagerSnapshotPath: "sha-15457104823554620187"
+  certManagerVersion: "1.16.1"
+
+  ocmControllerSnapshotPath: "sha-3868847230746277828"
+  ocmControllerVersion: "0.33.0"
+
+  greenhouseSnapshotPath: "sha-6660783123634428906"
+  greenhouseVersion: "0.16.1"
+
+  tlsSecretName: "ocm-registry-tls-certs"
+  valuesSecretName: "greenhouse-values"
