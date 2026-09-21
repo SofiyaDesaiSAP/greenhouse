@@ -74,6 +74,7 @@ make -f Makefile.ocm verify
 ```
 
 **Screenshot placeholder — `make verify` output:**
+
 <img width="758" height="431" alt="image" src="https://github.com/user-attachments/assets/371631b1-48eb-4fc7-ba25-d55b3247bfe5" />
 
 
@@ -83,9 +84,8 @@ make -f Makefile.ocm push GITHUB_TOKEN=$GITHUB_TOKEN
 ```
 
 **Screenshot placeholder — successful push:**
-```
-[SCREENSHOT: make push output showing all components transferred to ghcr.io]
-```
+
+<img width="1030" height="398" alt="image" src="https://github.com/user-attachments/assets/15ab5b07-0a5c-4e96-b741-4c1819b4eaa2" />
 
 ---
 
