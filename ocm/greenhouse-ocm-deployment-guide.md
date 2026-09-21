@@ -217,9 +217,9 @@ This creates:
 - `Deployer` greenhouse-stack — applies the kro RGD YAML directly to the cluster (no Flux HelmRelease for this step)
 
 **Screenshot placeholder:**
-```
-[SCREENSHOT: make deploy-apply output — namespace/componentversion/deployer/resource lines all showing "created" or "configured"]
-```
+
+<img width="586" height="172" alt="image" src="https://github.com/user-attachments/assets/bda885a7-79e9-4d3f-849e-2104bff26262" />
+
 
 Watch OCM + Flux objects become ready (~2–3 min):
 
@@ -228,9 +228,9 @@ make -f Makefile.ocm deploy-status
 ```
 
 **Screenshot placeholder:**
-```
-[SCREENSHOT: make deploy-status — ComponentVersion Ready, all Resources Ready, Deployer exists, greenhouse-stack-rgd Snapshot Ready]
-```
+
+<img width="769" height="594" alt="image" src="https://github.com/user-attachments/assets/2cffe2aa-ae52-4a70-a4ab-cf33789e42c0" />
+
 
 ---
 
