@@ -147,9 +147,8 @@ make -f Makefile.ocm bootstrap-flux
 > Skips reinstall if Flux is already running. Only installs from scratch.
 
 **Screenshot placeholder:**
-```
-[SCREENSHOT: make bootstrap-flux output showing flux install completing and rollout status]
-```
+
+<img width="525" height="41" alt="image" src="https://github.com/user-attachments/assets/7dee3264-9069-426f-bf03-eb6edd65d5a4" />
 
 ### 3b. Install kro
 
