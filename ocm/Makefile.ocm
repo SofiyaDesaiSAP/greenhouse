@@ -243,24 +243,28 @@ install-cert-manager:
 	fi
 
 # Install OCM controller via helm
-# This must be done before FluxDeployers can work.
+# Skips install if ocm-controller deployment already exists — safe to call on a live cluster.
 # cert-manager is installed first as a prerequisite.
 install-ocm-controller: install-cert-manager
-	@echo "Installing OCM controller v$(OCM_CONTROLLER_VERSION)..."
-	$(KC) helm upgrade --install ocm-controller \
-		oci://ghcr.io/open-component-model/helm/ocm-controller \
-		--namespace ocm-system \
-		--create-namespace \
-		--version v$(OCM_CONTROLLER_VERSION) \
-		--set tlsCert.generateTlsCert=true \
-		--wait --timeout 5m
-	@echo "OCM controller installed. Waiting for TLS secret creation..."
-	@for i in $$(seq 1 30); do \
-		$(KC) kubectl get secret ocm-registry-tls-certs -n ocm-system >/dev/null 2>&1 && \
-			echo "TLS secret exists." && break; \
-		echo "Waiting for ocm-registry-tls-certs ($${i}/30)..."; \
-		sleep 5; \
-	done
+	@if $(KC) kubectl get deployment ocm-controller -n ocm-system >/dev/null 2>&1; then \
+		echo "OCM controller already running — skipping install."; \
+	else \
+		echo "Installing OCM controller v$(OCM_CONTROLLER_VERSION)..."; \
+		$(KC) helm upgrade --install ocm-controller \
+			oci://ghcr.io/open-component-model/helm/ocm-controller \
+			--namespace ocm-system \
+			--create-namespace \
+			--version v$(OCM_CONTROLLER_VERSION) \
+			--set tlsCert.generateTlsCert=true \
+			--wait --timeout 5m; \
+		echo "OCM controller installed. Waiting for TLS secret creation..."; \
+		for i in $$(seq 1 30); do \
+			$(KC) kubectl get secret ocm-registry-tls-certs -n ocm-system >/dev/null 2>&1 && \
+				echo "TLS secret exists." && break; \
+			echo "Waiting for ocm-registry-tls-certs ($${i}/30)..."; \
+			sleep 5; \
+		done; \
+	fi
 
 # Grant helm-controller cluster-admin so it can install CRDs and ClusterRoles
 # (required for cert-manager, kro, ocm-controller installs via FluxDeployer)
