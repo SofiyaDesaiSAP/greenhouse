@@ -183,9 +183,9 @@ make -f Makefile.ocm install-ocm-controller GITHUB_TOKEN=$GITHUB_TOKEN
 > **Note:** `--set tlsCert.generateTlsCert=true` is required — the chart default is `false`. Without it, the OCM registry TLS secret is never created and pods stay in `ContainerCreating`.
 
 **Screenshot placeholder:**
-```
-[SCREENSHOT: make install-ocm-controller completing — cert-manager pods + ocm-controller pods Running + "TLS secret exists."]
-```
+
+<img width="589" height="55" alt="image" src="https://github.com/user-attachments/assets/8c3ce970-12f1-4a29-9618-a1476475ed83" />
+
 
 ---
 
