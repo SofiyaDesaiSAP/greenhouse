@@ -225,19 +225,10 @@ This creates:
 - `Resource` CRs — one per chart + one for the kro RGD, trigger OCM to sync each artifact into the internal registry as a `Snapshot`
 - `ResourceGraphDefinition` greenhouse-stack — applied directly from `deploy/kro-rgd.yaml`; kro processes it and creates the `GreenhouseStack` CRD
 
-**Screenshot:**
-> On a fresh cluster lines show `created`. On an existing cluster they show `unchanged`.
-
-<<<<<<< HEAD
 **Screenshot placeholder:**
 
 <img width="586" height="172" alt="image" src="https://github.com/user-attachments/assets/bda885a7-79e9-4d3f-849e-2104bff26262" />
 
-=======
-```
-[SCREENSHOT: make deploy-apply output]
-```
->>>>>>> 06706288 (commit)
 
 Watch OCM + Flux objects become ready (~2–3 min):
 
@@ -246,15 +237,8 @@ make -f Makefile.ocm deploy-status
 ```
 
 **Screenshot placeholder:**
-<<<<<<< HEAD
 
-<img width="769" height="594" alt="image" src="https://github.com/user-attachments/assets/2cffe2aa-ae52-4a70-a4ab-cf33789e42c0" />
-
-=======
-```
-[SCREENSHOT: make deploy-status — ComponentVersion Ready, all 5 Resources Ready, RGD Active]
-```
->>>>>>> 06706288 (commit)
+<img width="1078" height="832" alt="image" src="https://github.com/user-attachments/assets/f4be89ea-775f-414a-bdb7-e2a09f0a0afa" />
 
 ---
 
