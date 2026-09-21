@@ -74,10 +74,8 @@ make -f Makefile.ocm verify
 ```
 
 **Screenshot placeholder — `make verify` output:**
-```
 <img width="758" height="431" alt="image" src="https://github.com/user-attachments/assets/371631b1-48eb-4fc7-ba25-d55b3247bfe5" />
 
-```
 
 ```bash
 # 1e. Push to ghcr.io
