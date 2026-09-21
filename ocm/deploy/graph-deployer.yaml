@@ -1,0 +1,22 @@
+# OCM Deployer for the kro ResourceGraphDefinition
+#
+# Replaces FluxDeployer. The Deployer applies the kro-rgd YAML resource
+# directly to the cluster — no Flux HelmRelease involved.
+#
+# When the OCM controller syncs the greenhouse-stack-rgd Snapshot,
+# this Deployer applies the RGD manifest. kro then processes the RGD
+# and creates the GreenhouseStack CRD.
+#
+# Run `make deploy-instance` once the GreenhouseStack CRD is available.
+#
+# Requires: OCM controller with kind: Deployer support.
+
+apiVersion: delivery.ocm.software/v1alpha1
+kind: Deployer
+metadata:
+  name: greenhouse-stack
+  namespace: greenhouse
+spec:
+  resourceRef:
+    name: greenhouse-stack-rgd
+    namespace: greenhouse

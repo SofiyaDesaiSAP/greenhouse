@@ -13,13 +13,13 @@ ghcr.io (OCM registry)
            ├─ ocm-controller chart
            ├─ kro chart
            ├─ greenhouse chart
-           └─ greenhouse-stack chart (kro RGD)
+           └─ kro-rgd (plain YAML — ResourceGraphDefinition)
                         │
                OCM controller pulls → OCM internal registry (ocm-system)
                         │
-               Snapshots ──► OCIRepositories (Flux)
+               Snapshots → Resource CRs
                         │
-               FluxDeployer ──► HelmRelease: greenhouse-stack
+               Deployer (OCM) ──► applies kro-rgd YAML directly to cluster
                         │
                      kro processes RGD ──► GreenhouseStack CRD
                         │
@@ -62,26 +62,24 @@ cd greenhouse/ocm
 # 1a. Package the greenhouse Helm chart (resolves file:// deps + OCI)
 make -f Makefile.ocm package
 
-# 1b. Package the greenhouse-stack kro chart
-make -f Makefile.ocm package-stack
-
-# 1c. Fetch ocm-controller chart (v-prefix OCI tag requires manual pull)
+# 1b. Fetch ocm-controller chart (v-prefix OCI tag requires manual pull)
 make -f Makefile.ocm fetch-prereqs
 
-# 1d. Build the OCM CTF archive
+# 1c. Build the OCM CTF archive
+# kro-rgd is a plain YAML file (deploy/kro-rgd.yaml) — no helm packaging needed.
 make -f Makefile.ocm build
 
-# 1e. Verify the archive contains all components
+# 1d. Verify the archive contains all components
 make -f Makefile.ocm verify
 ```
 
 **Screenshot placeholder — `make verify` output:**
 ```
-[SCREENSHOT: make verify showing all 6 component versions present in the CTF]
+[SCREENSHOT: make verify showing all 5 component versions present in the CTF]
 ```
 
 ```bash
-# 1f. Push to ghcr.io
+# 1e. Push to ghcr.io
 make -f Makefile.ocm push GITHUB_TOKEN=$GITHUB_TOKEN
 ```
 
@@ -219,12 +217,12 @@ make -f Makefile.ocm deploy-apply
 
 This creates:
 - `ComponentVersion` greenhouse — points OCM controller at the bundle in ghcr.io
-- `Resource` CRs — one per chart, trigger OCM to sync each chart into the internal registry as a `Snapshot`
-- `FluxDeployer` greenhouse-stack — deploys the kro RGD chart via Flux
+- `Resource` CRs — one per chart + one for the kro RGD, trigger OCM to sync each artifact into the internal registry as a `Snapshot`
+- `Deployer` greenhouse-stack — applies the kro RGD YAML directly to the cluster (no Flux HelmRelease for this step)
 
 **Screenshot placeholder:**
 ```
-[SCREENSHOT: make deploy-apply output — namespace/componentversion/fluxdeployer/resource lines all showing "created" or "configured"]
+[SCREENSHOT: make deploy-apply output — namespace/componentversion/deployer/resource lines all showing "created" or "configured"]
 ```
 
 Watch OCM + Flux objects become ready (~2–3 min):
@@ -235,7 +233,7 @@ make -f Makefile.ocm deploy-status
 
 **Screenshot placeholder:**
 ```
-[SCREENSHOT: make deploy-status — ComponentVersion Ready, all Resources Ready, FluxDeployer Ready, greenhouse-stack HelmRelease Ready]
+[SCREENSHOT: make deploy-status — ComponentVersion Ready, all Resources Ready, Deployer exists, greenhouse-stack-rgd Snapshot Ready]
 ```
 
 ---
@@ -288,8 +286,8 @@ Expected final state:
 ```
 ComponentVersion:  greenhouse   Ready=True   0.16.1
 Resources:         all 5        Ready=True
-FluxDeployer:      greenhouse-stack  Ready=True
-HelmReleases:      cert-manager, ocm-controller, greenhouse, greenhouse-stack  all Ready=True
+Deployer:          greenhouse-stack  (applies kro RGD)
+HelmReleases:      cert-manager, ocm-controller, greenhouse  all Ready=True
 GreenhouseStack:   greenhouse   ACTIVE  Ready=True
 Pods (greenhouse): controller-manager x3, cors-proxy x2, webhook x2 — all Running
 Pods (cert-manager): cert-manager, cainjector, webhook — Running
@@ -426,7 +424,7 @@ make -f Makefile.ocm deploy-status
 ## Upgrading
 
 1. Update version variables in `Makefile.ocm`
-2. `make package package-stack build push GITHUB_TOKEN=$GITHUB_TOKEN`
+2. `make package build push GITHUB_TOKEN=$GITHUB_TOKEN`
 3. `make deploy-reconcile-ocm` — OCM pulls the new bundle and updates Snapshots
 4. Update `deploy/instance.yaml` snapshot paths with `make snapshot-urls`
 5. `kubectl apply -f deploy/instance.yaml`

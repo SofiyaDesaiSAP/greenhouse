@@ -142,16 +142,15 @@ components:
           type: OCIImage/v1
           imageReference: ${GREENHOUSE_IMAGE_REF}
 
-      # greenhouse-stack: thin Helm chart containing the kro ResourceGraphDefinition
-      # and GreenhouseStack Instance. ONE FluxDeployer deploys this chart; kro then
-      # creates all OCIRepositories + HelmReleases for the full stack.
-      - name: greenhouse-stack-chart
-        type: helmChart
+      # kro-rgd: plain YAML manifest containing the kro ResourceGraphDefinition.
+      # Applied directly to the cluster by the OCM Deployer (no Helm chart needed).
+      - name: kro-rgd
+        type: blob
         version: ${GREENHOUSE_VERSION}
         input:
           type: file
-          path: charts/greenhouse-stack-${GREENHOUSE_VERSION}.tgz
-          mediaType: application/vnd.cncf.helm.chart.content.v1.tar+gzip
+          path: deploy/kro-rgd.yaml
+          mediaType: application/yaml
           compress: false
 
   # -------------------------------------------------------------------------

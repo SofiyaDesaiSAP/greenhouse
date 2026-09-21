@@ -21,7 +21,7 @@ GITHUB_USER        ?= SofiyaDesaiSAP
 
 KC := KUBECONFIG=$(SHOOT_KUBECONFIG)
 
-.PHONY: all help package package-stack fetch-prereqs build push verify deploy-apply \
+.PHONY: all help package fetch-prereqs build push verify deploy-apply \
         deploy-instance clean \
         bootstrap-flux install-kro install-cert-manager install-ocm-controller grant-helm-rbac \
         install-prometheus-crds create-greenhouse-ns create-registry-secret \
@@ -34,7 +34,7 @@ help:
 	@echo "Greenhouse OCM bundle targets:"
 	@echo ""
 	@echo "── Bundle ────────────────────────────────────────────────────────────"
-	@echo "  make package        - helm dependency update + helm package"
+	@echo "  make package        - helm dependency update + helm package (greenhouse chart only)"
 	@echo "  make fetch-prereqs  - fetch ocm-controller chart (v-prefix OCI tag)"
 	@echo "  make build          - build OCM CTF archive (greenhouse-bundle.ctf)"
 	@echo "  make push           - push CTF to OCM_REGISTRY=$(OCM_REGISTRY)"
@@ -53,13 +53,14 @@ help:
 	@echo "  make copy-tls-secret        - copy OCM TLS cert from ocm-system → greenhouse"
 	@echo ""
 	@echo "── Deploy manifests ──────────────────────────────────────────────────"
-	@echo "  make deploy-apply   - kubectl apply -k deploy/ (ComponentVersion + Resources + FluxDeployers)"
+	@echo "  make deploy-apply   - kubectl apply -k deploy/ (ComponentVersion + Resources + Deployer)"
+	@echo "  make deploy-instance - wait for GreenhouseStack CRD, apply instance.yaml"
 	@echo "  make deploy-status  - show all OCM + Flux object statuses"
 	@echo "  make deploy-watch   - watch HelmRelease reconciliation live"
 	@echo "  make deploy-reconcile - force immediate reconciliation of all HelmReleases"
 	@echo ""
 	@echo "── Troubleshoot ──────────────────────────────────────────────────────"
-	@echo "  make flux-fix APP=<name>  - recover stuck HelmRelease (cert-manager|kro|ocm-controller|greenhouse)"
+	@echo "  make flux-fix APP=<name>  - recover stuck HelmRelease (cert-manager|ocm-controller|greenhouse)"
 	@echo ""
 	@echo "── Full deploy (fresh cluster, all steps in order) ───────────────────"
 	@echo "  make deploy-full    - bootstrap + secrets + apply + instance (requires GITHUB_TOKEN)"
@@ -69,8 +70,7 @@ help:
 	@echo "  make clean          - remove generated charts and archive"
 	@echo ""
 	@echo "Versions:"
-	@echo "  GREENHOUSE_VERSION=$(GREENHOUSE_VERSION)  (image tag: v$(GREENHOUSE_VERSION))"
-	@echo "  GREENHOUSE_CHART_VERSION=$(GREENHOUSE_CHART_VERSION)"
+	@echo "  GREENHOUSE_VERSION=$(GREENHOUSE_VERSION)"
 	@echo "  CERT_MANAGER_VERSION=$(CERT_MANAGER_VERSION)"
 	@echo "  FLUX_VERSION=$(FLUX_VERSION)"
 	@echo "  KRO_VERSION=$(KRO_VERSION)"
@@ -89,12 +89,6 @@ package: $(CHARTS_DIR)
 	  --version $(GREENHOUSE_VERSION) \
 	  --destination $(CHARTS_DIR)/
 
-# Package the greenhouse-stack Helm chart (kro RGD + Instance)
-package-stack: $(CHARTS_DIR)
-	helm package charts/greenhouse-stack \
-	  --version $(GREENHOUSE_VERSION) \
-	  --destination $(CHARTS_DIR)/
-
 # Fetch prerequisite charts whose OCI tags require a v-prefix (ocm helm input strips it)
 fetch-prereqs: $(CHARTS_DIR)
 	helm pull oci://ghcr.io/open-component-model/helm/ocm-controller \
@@ -106,8 +100,9 @@ $(CHARTS_DIR):
 
 # -----------------------------------------------------------------------
 # Step 2: build the OCM CTF (Common Transport Format) archive
+# kro-rgd is a plain YAML file (deploy/kro-rgd.yaml) — no Helm packaging needed.
 # -----------------------------------------------------------------------
-build: $(CHARTS_DIR)/greenhouse-$(GREENHOUSE_VERSION).tgz $(CHARTS_DIR)/greenhouse-stack-$(GREENHOUSE_VERSION).tgz
+build: $(CHARTS_DIR)/greenhouse-$(GREENHOUSE_VERSION).tgz
 	ocm add componentversions \
 	  --addenv \
 	  --file greenhouse-bundle.ctf \
@@ -123,9 +118,6 @@ build: $(CHARTS_DIR)/greenhouse-$(GREENHOUSE_VERSION).tgz $(CHARTS_DIR)/greenhou
 
 $(CHARTS_DIR)/greenhouse-$(GREENHOUSE_VERSION).tgz:
 	$(MAKE) package
-
-$(CHARTS_DIR)/greenhouse-stack-$(GREENHOUSE_VERSION).tgz:
-	$(MAKE) package-stack
 
 # -----------------------------------------------------------------------
 # Step 3: push CTF to OCM registry
@@ -187,10 +179,10 @@ deploy-instance:
 	$(KC) kubectl apply -f deploy/instance.yaml
 	@echo "GreenhouseStack instance applied. kro will now create OCIRepositories + HelmReleases."
 
-# Print Snapshot URLs from a live cluster — use these to update charts/greenhouse-stack/values.yaml
+# Print Snapshot URLs from a live cluster — use these to update deploy/instance.yaml
 # after bumping chart versions and pushing a new bundle.
 snapshot-urls:
-	@echo "Snapshot → URL mapping (paste paths into charts/greenhouse-stack/values.yaml):"
+	@echo "Snapshot → URL mapping (paste paths into deploy/instance.yaml):"
 	@echo ""
 	@$(KC) kubectl get snapshot -n greenhouse \
 		-o custom-columns='RESOURCE:.metadata.ownerReferences[0].name,REPO:.status.repositoryURL,TAG:.status.tag' \
@@ -203,7 +195,7 @@ snapshot-urls:
 
 clean:
 	find $(CHARTS_DIR) -maxdepth 1 -name "*.tgz" -delete 2>/dev/null || true
-	rm -f greenhouse-bundle.ctf
+	rm -rf greenhouse-bundle.ctf
 
 # -----------------------------------------------------------------------
 # Cluster bootstrap targets — run once on a fresh cluster
@@ -338,8 +330,10 @@ deploy-status:
 	$(KC) kubectl get componentversion -n greenhouse
 	@echo "\n── Resources ─────────────────────────────────────────────────────────"
 	$(KC) kubectl get resource -n greenhouse
-	@echo "\n── FluxDeployers ─────────────────────────────────────────────────────"
-	$(KC) kubectl get fluxdeployer -n greenhouse
+	@echo "\n── kro ResourceGraphDefinition ───────────────────────────────────────"
+	$(KC) kubectl get resourcegraphdefinition -n greenhouse 2>/dev/null || echo "(none)"
+	@echo "\n── GreenhouseStack instances ─────────────────────────────────────────"
+	$(KC) kubectl get greenhousestack -n greenhouse 2>/dev/null || echo "(CRD not ready yet)"
 	@echo "\n── HelmReleases (greenhouse ns) ──────────────────────────────────────"
 	$(KC) kubectl get helmrelease -n greenhouse
 	@echo "\n── Pods (greenhouse ns) ──────────────────────────────────────────────"
@@ -354,7 +348,7 @@ deploy-watch:
 
 deploy-reconcile:
 	@echo "Forcing reconciliation of all HelmReleases in greenhouse namespace..."
-	@for hr in cert-manager ocm-controller kro greenhouse; do \
+	@for hr in cert-manager ocm-controller greenhouse; do \
 		$(KC) kubectl annotate helmrelease $$hr -n greenhouse \
 			reconcile.fluxcd.io/requestedAt="$$(date -u +%Y-%m-%dT%H:%M:%SZ)" --overwrite \
 			2>/dev/null || true; \
@@ -366,7 +360,7 @@ deploy-reconcile-ocm:
 	@echo "Forcing OCM ComponentVersion + Resource reconciliation..."
 	$(KC) kubectl annotate componentversion greenhouse -n greenhouse \
 		reconcile.fluxcd.io/requestedAt="$$(date -u +%Y-%m-%dT%H:%M:%SZ)" --overwrite
-	@for r in cert-manager-chart kro-chart ocm-controller-chart greenhouse-chart greenhouse-stack-chart; do \
+	@for r in cert-manager-chart kro-chart ocm-controller-chart greenhouse-chart greenhouse-stack-rgd; do \
 		$(KC) kubectl annotate resource $$r -n greenhouse \
 			reconcile.fluxcd.io/requestedAt="$$(date -u +%Y-%m-%dT%H:%M:%SZ)" --overwrite \
 			2>/dev/null || true; \

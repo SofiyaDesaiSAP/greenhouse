@@ -4,4 +4,4 @@ resources:
   - namespace.yaml
   - componentversion.yaml
   - resources.yaml
-  - flux-deployer.yaml
+  - kro-rgd.yaml

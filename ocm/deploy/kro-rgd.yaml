@@ -1,0 +1,149 @@
+# kro ResourceGraphDefinition for Greenhouse
+#
+# Applied directly to the cluster via kustomize (deploy/kustomization.yaml).
+# When kro processes this RGD it creates the GreenhouseStack CRD.
+# Apply the GreenhouseStack instance separately: make -f Makefile.ocm deploy-instance
+#
+# NOTE: kind: Deployer (OCM) requires OCM controller > v0.33.0 (SAP-internal build).
+# On OCM controller v0.33.0 (public), this file is applied directly via kustomization.
+#
+# Schema uses kro v0.9.x SimpleSchema syntax (inline type strings, not {type: string}).
+# Status fields use CEL expressions projecting from managed HelmRelease conditions.
+apiVersion: kro.run/v1alpha1
+kind: ResourceGraphDefinition
+metadata:
+  name: greenhouse-stack
+  namespace: greenhouse
+spec:
+  schema:
+    apiVersion: v1alpha1
+    kind: GreenhouseStack
+    spec:
+      registryHost: "string"
+      certManagerSnapshotPath: "string"
+      certManagerVersion: "string"
+      ocmControllerSnapshotPath: "string"
+      ocmControllerVersion: "string"
+      greenhouseSnapshotPath: "string"
+      greenhouseVersion: "string"
+      tlsSecretName: "string"
+      valuesSecretName: "string"
+
+    status:
+      certManagerReady: "${certManagerHR.status.conditions[0].status}"
+      ocmControllerReady: "${ocmControllerHR.status.conditions[0].status}"
+      greenhouseReady: "${greenhouseHR.status.conditions[0].status}"
+
+  resources:
+
+    - id: certManagerOCIRepo
+      template:
+        apiVersion: source.toolkit.fluxcd.io/v1
+        kind: OCIRepository
+        metadata:
+          name: cert-manager
+          namespace: greenhouse
+        spec:
+          interval: 10m
+          url: "oci://${schema.spec.registryHost}/${schema.spec.certManagerSnapshotPath}"
+          ref:
+            tag: "${schema.spec.certManagerVersion}"
+          certSecretRef:
+            name: "${schema.spec.tlsSecretName}"
+
+    - id: certManagerHR
+      template:
+        apiVersion: helm.toolkit.fluxcd.io/v2
+        kind: HelmRelease
+        metadata:
+          name: cert-manager
+          namespace: greenhouse
+        spec:
+          interval: 10m
+          targetNamespace: cert-manager
+          install:
+            createNamespace: true
+            crds: CreateReplace
+          upgrade:
+            crds: CreateReplace
+          chartRef:
+            kind: OCIRepository
+            name: cert-manager
+            namespace: greenhouse
+          values:
+            installCRDs: true
+
+    - id: ocmControllerOCIRepo
+      template:
+        apiVersion: source.toolkit.fluxcd.io/v1
+        kind: OCIRepository
+        metadata:
+          name: ocm-controller
+          namespace: greenhouse
+        spec:
+          interval: 10m
+          url: "oci://${schema.spec.registryHost}/${schema.spec.ocmControllerSnapshotPath}"
+          ref:
+            tag: "${schema.spec.ocmControllerVersion}"
+          certSecretRef:
+            name: "${schema.spec.tlsSecretName}"
+
+    - id: ocmControllerHR
+      template:
+        apiVersion: helm.toolkit.fluxcd.io/v2
+        kind: HelmRelease
+        metadata:
+          name: ocm-controller
+          namespace: greenhouse
+        spec:
+          interval: 10m
+          targetNamespace: ocm-system
+          install:
+            createNamespace: true
+          dependsOn:
+            - name: cert-manager
+              namespace: greenhouse
+          chartRef:
+            kind: OCIRepository
+            name: ocm-controller
+            namespace: greenhouse
+
+    - id: greenhouseOCIRepo
+      template:
+        apiVersion: source.toolkit.fluxcd.io/v1
+        kind: OCIRepository
+        metadata:
+          name: greenhouse
+          namespace: greenhouse
+        spec:
+          interval: 10m
+          url: "oci://${schema.spec.registryHost}/${schema.spec.greenhouseSnapshotPath}"
+          ref:
+            tag: "${schema.spec.greenhouseVersion}"
+          certSecretRef:
+            name: "${schema.spec.tlsSecretName}"
+
+    - id: greenhouseHR
+      template:
+        apiVersion: helm.toolkit.fluxcd.io/v2
+        kind: HelmRelease
+        metadata:
+          name: greenhouse
+          namespace: greenhouse
+        spec:
+          interval: 10m
+          targetNamespace: greenhouse
+          dependsOn:
+            - name: cert-manager
+              namespace: greenhouse
+            - name: ocm-controller
+              namespace: greenhouse
+          chartRef:
+            kind: OCIRepository
+            name: greenhouse
+            namespace: greenhouse
+          valuesFrom:
+            - kind: Secret
+              name: "greenhouse-values"
+              valuesKey: values.yaml
+              optional: false
