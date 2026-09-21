@@ -1,3 +1,4 @@
+<img width="758" height="431" alt="Screenshot 2026-09-21 at 17 29 56" src="https://github.com/user-attachments/assets/00b1c5aa-2a77-4c3c-9538-22790818fce3" />
 # Greenhouse OCM + Flux Deployment Guide
 
 Deploy Greenhouse on a Kubernetes cluster using OCM (Open Component Model) as the artifact distribution layer and Flux as the GitOps engine. A kro ResourceGraphDefinition (`GreenhouseStack`) ties the components together via a single parameterized CR instance.
@@ -75,7 +76,7 @@ make -f Makefile.ocm verify
 
 **Screenshot placeholder — `make verify` output:**
 ```
-[SCREENSHOT: make verify showing all 5 component versions present in the CTF]
+<img width="758" height="431" alt="image" src="https://github.com/user-attachments/assets/371631b1-48eb-4fc7-ba25-d55b3247bfe5" />
 ```
 
 ```bash
