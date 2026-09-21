@@ -24,7 +24,8 @@ KC := KUBECONFIG=$(SHOOT_KUBECONFIG)
 .PHONY: all help package fetch-prereqs build push verify deploy-apply \
         deploy-instance clean \
         bootstrap-flux install-kro install-cert-manager install-ocm-controller grant-helm-rbac \
-        install-prometheus-crds create-greenhouse-ns create-registry-secret \
+        install-prometheus-crds install-flux-extension-stubs \
+        create-greenhouse-ns create-registry-secret \
         create-values-secret copy-tls-secret deploy-status deploy-watch \
         deploy-reconcile deploy-reconcile-ocm deploy-full flux-fix snapshot-urls
 
@@ -45,6 +46,7 @@ help:
 	@echo "  make install-ocm-controller - install OCM controller via helm"
 	@echo "  make grant-helm-rbac        - grant helm-controller cluster-admin RBAC"
 	@echo "  make install-prometheus-crds - install prometheus-operator CRDs"
+	@echo "  make install-flux-extension-stubs - install Flux extension stub CRDs (required by greenhouse v0.16.1+)"
 	@echo ""
 	@echo "── Secrets and namespace ─────────────────────────────────────────────"
 	@echo "  make create-greenhouse-ns   - create greenhouse namespace"
@@ -284,6 +286,14 @@ install-prometheus-crds:
 		--create-namespace \
 		--wait --timeout 3m
 
+# Install stub CRDs for Flux extension framework (source.extensions.fluxcd.io).
+# Greenhouse v0.16.1+ controller-manager watches ArtifactGenerator from this API group.
+# The full framework is not shipped with flux install — this stub unblocks the controller.
+install-flux-extension-stubs:
+	@echo "Applying Flux extension stub CRDs..."
+	$(KC) kubectl apply -f prereqs/flux-extension-stubs.yaml
+	@echo "Flux extension stub CRDs applied."
+
 # -----------------------------------------------------------------------
 # Secrets and namespace targets
 # -----------------------------------------------------------------------
@@ -397,6 +407,7 @@ flux-fix:
 # Requires: GITHUB_TOKEN env var set, greenhouse-values.yaml present
 # -----------------------------------------------------------------------
 deploy-full: bootstrap-flux install-kro grant-helm-rbac install-prometheus-crds \
+             install-flux-extension-stubs \
              install-ocm-controller create-greenhouse-ns \
              create-registry-secret copy-tls-secret create-values-secret \
              deploy-apply deploy-instance

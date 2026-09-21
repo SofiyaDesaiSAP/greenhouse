@@ -187,6 +187,15 @@ make -f Makefile.ocm install-ocm-controller GITHUB_TOKEN=$GITHUB_TOKEN
 <img width="589" height="55" alt="image" src="https://github.com/user-attachments/assets/8c3ce970-12f1-4a29-9618-a1476475ed83" />
 
 
+### 3f. Install Flux extension stub CRDs
+
+Greenhouse v0.16.1+ controller-manager watches `ArtifactGenerator` from `source.extensions.fluxcd.io` — an API group not included in `flux install`. Install the stub to prevent CrashLoopBackOff:
+
+```bash
+make -f Makefile.ocm install-flux-extension-stubs
+```
+
+
 ## Step 4 — Create Namespace and Secrets
 
 ```bash
@@ -214,12 +223,21 @@ make -f Makefile.ocm deploy-apply
 This creates:
 - `ComponentVersion` greenhouse — points OCM controller at the bundle in ghcr.io
 - `Resource` CRs — one per chart + one for the kro RGD, trigger OCM to sync each artifact into the internal registry as a `Snapshot`
-- `Deployer` greenhouse-stack — applies the kro RGD YAML directly to the cluster (no Flux HelmRelease for this step)
+- `ResourceGraphDefinition` greenhouse-stack — applied directly from `deploy/kro-rgd.yaml`; kro processes it and creates the `GreenhouseStack` CRD
 
+**Screenshot:**
+> On a fresh cluster lines show `created`. On an existing cluster they show `unchanged`.
+
+<<<<<<< HEAD
 **Screenshot placeholder:**
 
 <img width="586" height="172" alt="image" src="https://github.com/user-attachments/assets/bda885a7-79e9-4d3f-849e-2104bff26262" />
 
+=======
+```
+[SCREENSHOT: make deploy-apply output]
+```
+>>>>>>> 06706288 (commit)
 
 Watch OCM + Flux objects become ready (~2–3 min):
 
@@ -228,9 +246,15 @@ make -f Makefile.ocm deploy-status
 ```
 
 **Screenshot placeholder:**
+<<<<<<< HEAD
 
 <img width="769" height="594" alt="image" src="https://github.com/user-attachments/assets/2cffe2aa-ae52-4a70-a4ab-cf33789e42c0" />
 
+=======
+```
+[SCREENSHOT: make deploy-status — ComponentVersion Ready, all 5 Resources Ready, RGD Active]
+```
+>>>>>>> 06706288 (commit)
 
 ---
 
@@ -414,6 +438,48 @@ make -f Makefile.ocm deploy-status
 ```
 
 > **Note:** OCM caches by tag. If you push the same version tag with new chart content, OCM will serve the cached version. Bump `GREENHOUSE_VERSION` to guarantee a cache-miss, or delete the relevant Snapshot to force a re-pull.
+
+---
+
+### greenhouse controller-manager CrashLoopBackOff: `ArtifactGenerator` CRD not found
+
+**Symptom:**
+```
+ERROR controller-runtime.source.Kind if kind is a CRD, it should be installed before calling Start
+{"kind": "ArtifactGenerator.source.extensions.fluxcd.io", "error": "no matches for kind \"ArtifactGenerator\" in version \"source.extensions.fluxcd.io/v1beta1\""}
+ERROR setup problem running manager {"error": "failed to wait for catalog caches to sync kind source: *v1beta1.ArtifactGenerator: ..."}
+```
+
+**Cause:** Greenhouse v0.16.1 added artifact publishing via the Flux Controller Provider framework (`source.extensions.fluxcd.io`). This API group is not included in `flux install` — it must be installed separately.
+
+**Fix:** Apply a stub CRD to unblock the controller while the full Flux extension framework isn't required:
+```bash
+kubectl apply -f - <<'EOF'
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: artifactgenerators.source.extensions.fluxcd.io
+spec:
+  group: source.extensions.fluxcd.io
+  names:
+    kind: ArtifactGenerator
+    listKind: ArtifactGeneratorList
+    plural: artifactgenerators
+    singular: artifactgenerator
+  scope: Namespaced
+  versions:
+  - name: v1beta1
+    served: true
+    storage: true
+    schema:
+      openAPIV3Schema:
+        type: object
+        x-kubernetes-preserve-unknown-fields: true
+EOF
+kubectl rollout restart deployment greenhouse-greenhouse-controller-manager -n greenhouse
+```
+
+The controller-manager will start successfully. The `ArtifactGenerator` feature (artifact publishing) will be inactive until the full Flux extension framework is installed.
 
 ---
 
