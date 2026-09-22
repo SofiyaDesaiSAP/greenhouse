@@ -117,6 +117,7 @@ $(CHARTS_DIR):
 # kro-rgd is a plain YAML file (deploy/kro-rgd.yaml) — no Helm packaging needed.
 # -----------------------------------------------------------------------
 build: $(CHARTS_DIR)/greenhouse-$(GREENHOUSE_VERSION).tgz
+	rm -rf greenhouse-bundle.ctf
 	ocm add componentversions \
 	  --addenv \
 	  --file greenhouse-bundle.ctf \
