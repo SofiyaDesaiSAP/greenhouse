@@ -52,9 +52,50 @@ All `make` commands run from the `greenhouse/ocm/` directory.
 
 ---
 
-## Step 1 — Prepare the OCM Bundle
+## Step 1 — Push the OCM Bundle to ghcr.io
 
-> Skip if the bundle is already pushed to `ghcr.io/sofiyadesaisap/greenhouse`.
+The OCM bundle contains everything Greenhouse needs: cert-manager, Flux, kro, and the OCM controller as prerequisites, the Greenhouse Helm chart and container image, and the kro ResourceGraphDefinition. It is versioned and pushed to `ghcr.io/sofiyadesaisap/greenhouse` as a set of OCI artifacts.
+
+### Option A — GitHub Actions (recommended)
+
+The `push-ocm-bundle.yaml` workflow builds and pushes the bundle automatically. Because it runs with `GITHUB_TOKEN`, the resulting packages are automatically public and linked to the repository — no manual visibility change needed.
+
+**Trigger automatically:** any push to `main` that changes `ocm/component-constructor.yaml`, `ocm/deploy/kro-rgd.yaml`, or `ocm/Makefile.ocm`.
+
+**Trigger manually from the Actions tab:**
+
+Go to **Actions → Build and Push OCM Bundle → Run workflow**, set the `greenhouse_version` input if needed, and click **Run workflow**.
+
+Or via CLI:
+
+```bash
+make -f Makefile.ocm trigger-workflow
+```
+
+**Screenshot placeholder — workflow run (all steps green):**
+
+<img width="758" height="431" alt="image" src="https://github.com/user-attachments/assets/371631b1-48eb-4fc7-ba25-d55b3247bfe5" />
+
+**Screenshot placeholder — published packages on ghcr.io:**
+
+<img width="1030" height="398" alt="image" src="https://github.com/user-attachments/assets/15ab5b07-0a5c-4e96-b741-4c1819b4eaa2" />
+
+The workflow publishes 6 packages under `ghcr.io/sofiyadesaisap/greenhouse/`:
+
+| Package | Component |
+|---|---|
+| `greenhouse:<version>` | top-level product (references all others) |
+| `greenhouse/core:<version>` | greenhouse chart + image + kro RGD |
+| `greenhouse/prerequisites/cert-manager:<version>` | cert-manager chart |
+| `greenhouse/prerequisites/flux:<version>` | Flux chart |
+| `greenhouse/prerequisites/kro:<version>` | kro chart |
+| `greenhouse/prerequisites/ocm-controller:<version>` | OCM controller chart |
+
+---
+
+### Option B — Local build (manual / air-gapped)
+
+Use this when you need to inspect the archive before pushing, or when pushing to a private registry in an air-gapped environment.
 
 ```bash
 cd greenhouse/ocm
@@ -62,30 +103,25 @@ cd greenhouse/ocm
 # 1a. Package the greenhouse Helm chart (resolves file:// deps + OCI)
 make -f Makefile.ocm package
 
-# 1b. Fetch ocm-controller chart (v-prefix OCI tag requires manual pull)
+# 1b. Fetch all prerequisite charts (cert-manager, flux2, kro, ocm-controller)
 make -f Makefile.ocm fetch-prereqs
 
 # 1c. Build the OCM CTF archive
-# kro-rgd is a plain YAML file (deploy/kro-rgd.yaml) — no helm packaging needed.
 make -f Makefile.ocm build
 
-# 1d. Verify the archive contains all components
+# 1d. Verify all 6 components are present in the archive
 make -f Makefile.ocm verify
 ```
 
-**Screenshot placeholder — `make verify` output:**
+**Screenshot placeholder — `make verify` output showing all 6 components:**
 
 <img width="758" height="431" alt="image" src="https://github.com/user-attachments/assets/371631b1-48eb-4fc7-ba25-d55b3247bfe5" />
 
-
 ```bash
-# 1e. Push to ghcr.io
+# 1e. Push to ghcr.io (or override OCM_REGISTRY for a private registry)
 make -f Makefile.ocm push GITHUB_TOKEN=$GITHUB_TOKEN
+# Air-gapped target: make push OCM_REGISTRY=oci://my-registry.internal
 ```
-
-**Screenshot placeholder — successful push:**
-
-<img width="1030" height="398" alt="image" src="https://github.com/user-attachments/assets/15ab5b07-0a5c-4e96-b741-4c1819b4eaa2" />
 
 ---
 

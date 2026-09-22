@@ -21,7 +21,7 @@ GITHUB_USER        ?= SofiyaDesaiSAP
 
 KC := KUBECONFIG=$(SHOOT_KUBECONFIG)
 
-.PHONY: all help package fetch-prereqs build push verify deploy-apply \
+.PHONY: all help package fetch-prereqs build push verify trigger-workflow deploy-apply \
         deploy-instance clean \
         bootstrap-flux install-kro install-cert-manager install-ocm-controller grant-helm-rbac \
         install-prometheus-crds install-flux-extension-stubs \
@@ -35,10 +35,11 @@ help:
 	@echo "Greenhouse OCM bundle targets:"
 	@echo ""
 	@echo "── Bundle ────────────────────────────────────────────────────────────"
+	@echo "  make trigger-workflow               - trigger push-ocm-bundle GitHub Actions workflow (recommended)"
 	@echo "  make package        - helm dependency update + helm package (greenhouse chart only)"
 	@echo "  make fetch-prereqs  - fetch ocm-controller chart (v-prefix OCI tag)"
 	@echo "  make build          - build OCM CTF archive (greenhouse-bundle.ctf)"
-	@echo "  make push           - push CTF to OCM_REGISTRY=$(OCM_REGISTRY)"
+	@echo "  make push           - push CTF to OCM_REGISTRY=$(OCM_REGISTRY)  (local alternative to workflow)"
 	@echo "  make verify         - inspect component versions in local archive"
 	@echo ""
 	@echo "── Cluster bootstrap (fresh cluster, run once) ───────────────────────"
@@ -144,6 +145,18 @@ push: greenhouse-bundle.ctf
 	  --overwrite \
 	  greenhouse-bundle.ctf \
 	  oci://$(OCM_REGISTRY)
+
+# -----------------------------------------------------------------------
+# Trigger the push-ocm-bundle GitHub Actions workflow (recommended for CI).
+# Uses GITHUB_TOKEN automatically — packages are public and repository-linked.
+# Requires the gh CLI to be authenticated: gh auth login
+# -----------------------------------------------------------------------
+trigger-workflow:
+	gh workflow run push-ocm-bundle.yaml \
+	  --repo $(GITHUB_USER)/greenhouse \
+	  --field greenhouse_version=$(GREENHOUSE_VERSION)
+	@echo "Workflow triggered. Watch progress:"
+	@echo "  gh run watch --repo $(GITHUB_USER)/greenhouse \$$(gh run list --repo $(GITHUB_USER)/greenhouse --workflow=push-ocm-bundle.yaml --limit=1 --json databaseId -q '.[0].databaseId')"
 
 # Verify all component versions are present in the local archive
 verify: greenhouse-bundle.ctf
