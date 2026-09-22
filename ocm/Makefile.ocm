@@ -16,7 +16,7 @@ GITHUB_TOKEN ?=
 
 GREENHOUSE_SRC     ?= ..
 CHARTS_DIR         := charts
-SHOOT_KUBECONFIG   ?= ../../greenhouse-kubeconfig.yaml
+SHOOT_KUBECONFIG   ?= $(or $(KUBECONFIG),../../greenhouse-kubeconfig.yaml)
 GITHUB_USER        ?= SofiyaDesaiSAP
 
 KC := KUBECONFIG=$(SHOOT_KUBECONFIG)
