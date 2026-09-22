@@ -268,9 +268,9 @@ make -f Makefile.ocm deploy-watch
 ```
 
 **Screenshot placeholder:**
-```
-[SCREENSHOT: make deploy-watch — cert-manager True, ocm-controller True, greenhouse True in order]
-```
+
+<img width="1085" height="89" alt="image" src="https://github.com/user-attachments/assets/96453f0d-ca4c-47b9-b6b9-84804d172b87" />
+
 
 ---
 
@@ -281,9 +281,9 @@ make -f Makefile.ocm deploy-status
 ```
 
 **Screenshot placeholder — final full status:**
-```
-[SCREENSHOT: make deploy-status final state]
-```
+
+<img width="1085" height="834" alt="image" src="https://github.com/user-attachments/assets/7b0db310-fb49-4bd2-b525-fe7aed4129ab" />
+
 
 Expected final state:
 
@@ -301,9 +301,9 @@ Pods (flux-system):  helm-controller, source-controller, kustomize-controller, n
 ```
 
 **Screenshot placeholder:**
-```
-[SCREENSHOT: kubectl get pods -n greenhouse showing all Running]
-```
+
+<img width="676" height="130" alt="image" src="https://github.com/user-attachments/assets/517a2eb3-526c-4e79-8d56-ede452327f51" />
+
 
 ```bash
 # Check GreenhouseStack instance
@@ -311,9 +311,9 @@ kubectl get greenhousestack -n greenhouse
 ```
 
 **Screenshot placeholder:**
-```
-[SCREENSHOT: kubectl get greenhousestack showing STATE=ACTIVE READY=True]
-```
+
+<img width="476" height="46" alt="image" src="https://github.com/user-attachments/assets/0ba67ea2-5643-45cb-b979-711bcafe9018" />
+
 
 ---
 
