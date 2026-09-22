@@ -37,9 +37,9 @@ jobs:
           OCM_VERSION_CLEAN=${OCM_VERSION#v}
           echo "Installing OCM CLI ${OCM_VERSION}"
           curl -fsSL "https://github.com/open-component-model/ocm/releases/download/${OCM_VERSION}/ocm-${OCM_VERSION_CLEAN}-linux-amd64.tar.gz" \
-            -o ocm.tar.gz
-          tar xzf ocm.tar.gz ocm
-          sudo mv ocm /usr/local/bin/
+            -o /tmp/ocm.tar.gz
+          tar xzf /tmp/ocm.tar.gz -C /tmp/
+          sudo mv /tmp/ocm /usr/local/bin/
           ocm version
 
       - name: Set version
