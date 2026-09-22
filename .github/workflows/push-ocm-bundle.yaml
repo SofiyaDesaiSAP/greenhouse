@@ -33,8 +33,8 @@ jobs:
 
       - name: Install OCM CLI
         run: |
-          OCM_VERSION=$(curl -sf https://api.github.com/repos/open-component-model/ocm/releases/latest | jq -r .tag_name)
-          OCM_VERSION_CLEAN=${OCM_VERSION#v}
+          OCM_VERSION="v0.48.0"
+          OCM_VERSION_CLEAN="${OCM_VERSION#v}"
           echo "Installing OCM CLI ${OCM_VERSION}"
           curl -fsSL "https://github.com/open-component-model/ocm/releases/download/${OCM_VERSION}/ocm-${OCM_VERSION_CLEAN}-linux-amd64.tar.gz" \
             -o /tmp/ocm.tar.gz
