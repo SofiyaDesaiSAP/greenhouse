@@ -1,0 +1,75 @@
+name: Build and Push OCM Bundle
+
+on:
+  workflow_dispatch:
+    inputs:
+      greenhouse_version:
+        description: 'Greenhouse version to build (e.g. 0.16.1)'
+        required: false
+        default: '0.16.1'
+  push:
+    branches:
+      - main
+    paths:
+      - 'ocm/component-constructor.yaml'
+      - 'ocm/deploy/kro-rgd.yaml'
+      - 'ocm/Makefile.ocm'
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  push-ocm-bundle:
+    name: Push OCM Bundle
+    runs-on: [ubuntu-latest]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Helm
+        uses: azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2 # v5.0.0
+
+      - name: Install OCM CLI
+        run: |
+          OCM_VERSION=$(curl -sf https://api.github.com/repos/open-component-model/ocm/releases/latest | jq -r .tag_name)
+          OCM_VERSION_CLEAN=${OCM_VERSION#v}
+          echo "Installing OCM CLI ${OCM_VERSION}"
+          curl -fsSL "https://github.com/open-component-model/ocm/releases/download/${OCM_VERSION}/ocm-${OCM_VERSION_CLEAN}-linux-amd64.tar.gz" \
+            -o ocm.tar.gz
+          tar xzf ocm.tar.gz ocm
+          sudo mv ocm /usr/local/bin/
+          ocm version
+
+      - name: Set version
+        id: vars
+        run: |
+          VERSION="${{ github.event.inputs.greenhouse_version || '0.16.1' }}"
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "Building OCM bundle for greenhouse v${VERSION}"
+
+      - name: Package Helm charts and fetch prereqs
+        working-directory: ocm
+        run: make -f Makefile.ocm package fetch-prereqs
+        env:
+          GREENHOUSE_VERSION: ${{ steps.vars.outputs.version }}
+
+      - name: Build OCM CTF archive
+        working-directory: ocm
+        run: make -f Makefile.ocm build
+        env:
+          GREENHOUSE_VERSION: ${{ steps.vars.outputs.version }}
+
+      - name: Verify bundle contents
+        working-directory: ocm
+        run: make -f Makefile.ocm verify
+        env:
+          GREENHOUSE_VERSION: ${{ steps.vars.outputs.version }}
+
+      - name: Push OCM bundle to ghcr.io
+        working-directory: ocm
+        run: make -f Makefile.ocm push
+        env:
+          GREENHOUSE_VERSION: ${{ steps.vars.outputs.version }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -8,7 +8,7 @@ OCM_CONTROLLER_VERSION    ?= 0.33.0
 
 # OCM registry — must support deep OCI paths (ghcr.io works; Docker Hub does not).
 # Override for air-gapped target:  make push OCM_REGISTRY=oci://my-registry.internal
-OCM_REGISTRY ?= ghcr.io/sofiyadesaisap/greenhouse-ocm
+OCM_REGISTRY ?= ghcr.io/sofiyadesaisap/greenhouse
 
 # GitHub PAT with write:packages scope — required by OCM v0.48 for ghcr.io auth.
 # Set via environment: export GITHUB_TOKEN=ghp_...

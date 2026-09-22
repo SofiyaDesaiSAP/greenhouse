@@ -54,7 +54,7 @@ All `make` commands run from the `greenhouse/ocm/` directory.
 
 ## Step 1 — Prepare the OCM Bundle
 
-> Skip if the bundle is already pushed to `ghcr.io/sofiyadesaisap/greenhouse-ocm`.
+> Skip if the bundle is already pushed to `ghcr.io/sofiyadesaisap/greenhouse`.
 
 ```bash
 cd greenhouse/ocm
