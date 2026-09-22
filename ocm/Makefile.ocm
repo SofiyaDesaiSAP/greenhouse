@@ -91,10 +91,22 @@ package: $(CHARTS_DIR)
 	  --version $(GREENHOUSE_VERSION) \
 	  --destination $(CHARTS_DIR)/
 
-# Fetch prerequisite charts whose OCI tags require a v-prefix (ocm helm input strips it)
+# Fetch prerequisite charts that require pre-downloading (OCI v-prefix tags, or
+# helm input type unreliable in CI). All charts use file input in component-constructor.yaml.
 fetch-prereqs: $(CHARTS_DIR)
 	helm pull oci://ghcr.io/open-component-model/helm/ocm-controller \
 	  --version v$(OCM_CONTROLLER_VERSION) \
+	  --destination $(CHARTS_DIR)/
+	helm pull cert-manager \
+	  --repo https://charts.jetstack.io \
+	  --version v$(CERT_MANAGER_VERSION) \
+	  --destination $(CHARTS_DIR)/
+	helm pull flux2 \
+	  --repo https://fluxcd-community.github.io/helm-charts \
+	  --version $(FLUX_VERSION) \
+	  --destination $(CHARTS_DIR)/
+	helm pull oci://registry.k8s.io/kro/charts/kro \
+	  --version $(KRO_VERSION) \
 	  --destination $(CHARTS_DIR)/
 
 $(CHARTS_DIR):
@@ -119,7 +131,7 @@ build: $(CHARTS_DIR)/greenhouse-$(GREENHOUSE_VERSION).tgz
 	  OCM_CONTROLLER_VERSION=$(OCM_CONTROLLER_VERSION)
 
 $(CHARTS_DIR)/greenhouse-$(GREENHOUSE_VERSION).tgz:
-	$(MAKE) package
+	$(MAKE) -f Makefile.ocm package
 
 # -----------------------------------------------------------------------
 # Step 3: push CTF to OCM registry

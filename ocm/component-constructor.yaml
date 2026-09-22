@@ -42,10 +42,10 @@ components:
         type: helmChart
         version: ${CERT_MANAGER_VERSION}
         input:
-          type: helm
-          path: cert-manager
-          helmRepository: https://charts.jetstack.io
-          version: ${CERT_MANAGER_VERSION}
+          type: file
+          path: charts/cert-manager-v${CERT_MANAGER_VERSION}.tgz
+          mediaType: application/vnd.cncf.helm.chart.content.v1.tar+gzip
+          compress: false
 
   # -------------------------------------------------------------------------
   # Prerequisite: flux2
@@ -62,10 +62,10 @@ components:
         type: helmChart
         version: ${FLUX_VERSION}
         input:
-          type: helm
-          path: flux2
-          helmRepository: https://fluxcd-community.github.io/helm-charts
-          version: ${FLUX_VERSION}
+          type: file
+          path: charts/flux2-${FLUX_VERSION}.tgz
+          mediaType: application/vnd.cncf.helm.chart.content.v1.tar+gzip
+          compress: false
 
   # -------------------------------------------------------------------------
   # Prerequisite: kro (Kubernetes Resource Orchestrator)
@@ -82,10 +82,10 @@ components:
         type: helmChart
         version: ${KRO_VERSION}
         input:
-          type: helm
-          path: kro
-          helmRepository: oci://registry.k8s.io/kro/charts
-          version: ${KRO_VERSION}
+          type: file
+          path: charts/kro-${KRO_VERSION}.tgz
+          mediaType: application/vnd.cncf.helm.chart.content.v1.tar+gzip
+          compress: false
 
   # -------------------------------------------------------------------------
   # Prerequisite: ocm-controller
