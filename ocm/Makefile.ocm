@@ -1,6 +1,6 @@
 GREENHOUSE_VERSION        ?= 0.16.1
 GREENHOUSE_IMAGE_REF      ?= ghcr.io/cloudoperators/greenhouse:v$(GREENHOUSE_VERSION)
-CERT_MANAGER_VERSION      ?= 1.16.1
+CERT_MANAGER_VERSION      ?= 1.20.1
 FLUX_VERSION              ?= 2.15.0
 KRO_VERSION               ?= 0.9.4
 OCM_CONTROLLER_VERSION    ?= 0.33.0
@@ -238,7 +238,7 @@ install-cert-manager:
 	else \
 		echo "Installing cert-manager v$(CERT_MANAGER_VERSION)..."; \
 		$(KC) helm upgrade --install cert-manager cert-manager \
-			--repo https://charts.jetstack.io \
+			--repo oci://ghcr.io/cloudoperators/greenhouse-extensions/charts \
 			--namespace cert-manager \
 			--create-namespace \
 			--version v$(CERT_MANAGER_VERSION) \

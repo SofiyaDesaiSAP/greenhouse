@@ -5,7 +5,7 @@
 # Variables (set via env or make):
 #   GREENHOUSE_VERSION        - greenhouse app version, e.g. 0.16.1
 #   GREENHOUSE_IMAGE_REF      - full image ref, e.g. ghcr.io/cloudoperators/greenhouse:v0.16.1
-#   CERT_MANAGER_VERSION      - e.g. 1.16.1  (no v-prefix; OCM adds v where required)
+#   CERT_MANAGER_VERSION      - e.g. 1.20.1
 #   FLUX_VERSION              - e.g. 2.15.0
 #   KRO_VERSION               - e.g. 0.9.4
 #   OCM_CONTROLLER_VERSION    - e.g. 0.33.0  (no v-prefix; OCM adds v where required)
@@ -29,8 +29,8 @@ components:
 
   # -------------------------------------------------------------------------
   # Prerequisite: cert-manager
-  # OCM fetches directly from https://charts.jetstack.io — no helm pull needed.
-  # jetstack chart versions use v-prefix (v1.16.1), hence "v${CERT_MANAGER_VERSION}".
+  # OCM fetches directly from the greenhouse-extensions OCI registry — no helm pull needed.
+  # Source: ghcr.io/cloudoperators/greenhouse-extensions/charts/cert-manager:${CERT_MANAGER_VERSION}
   # -------------------------------------------------------------------------
   - name: github.com/cloudoperators/greenhouse/prerequisites/cert-manager
     version: ${CERT_MANAGER_VERSION}
@@ -46,18 +46,18 @@ components:
         input:
           type: helm
           path: cert-manager
-          helmRepository: https://charts.jetstack.io
-          version: v${CERT_MANAGER_VERSION}
+          helmRepository: oci://ghcr.io/cloudoperators/greenhouse-extensions/charts
+          version: ${CERT_MANAGER_VERSION}
 
   # -------------------------------------------------------------------------
-  # Prerequisite: flux2 (greenhouse-customized kustomization)
-  # Bundles config/samples/flux/ from this repo — the kustomization overlay that:
-  #   - patches NetworkPolicy to allow greenhouse namespace access to flux artifacts
-  #     (no extra RBAC needed for greenhouse controller)
-  #   - enables ExternalArtifact feature gate on kustomize-controller
-  #   - removes unused image-automation-controller + image-reflector-controller
-  # The flux version pinned in the kustomization (v2.9.5) is intentional — update
-  # config/samples/flux/kustomization.yaml to change it.
+  # Prerequisite: flux2 (official install manifests)
+  # Uses the compiled install.yaml from the official fluxcd/flux2 release.
+  # Source: https://github.com/fluxcd/flux2/tree/main/install
+  # Download URL: https://github.com/fluxcd/flux2/releases/download/v${FLUX_VERSION}/install.yaml
+  #
+  # access type wget = external reference stored in CTF descriptor.
+  # The manifest is downloaded and embedded as an OCI blob during:
+  #   ocm transfer ctf --copy-resources ...
   # -------------------------------------------------------------------------
   - name: github.com/cloudoperators/greenhouse/prerequisites/flux
     version: ${FLUX_VERSION}
@@ -67,13 +67,13 @@ components:
       - name: cloudoperators.github.com/role
         value: prerequisite
     resources:
-      - name: flux-kustomization
+      - name: flux-install
         type: blob
         version: ${FLUX_VERSION}
-        input:
-          type: dir
-          path: ../config/samples/flux
-          compress: true
+        access:
+          type: wget
+          url: https://github.com/fluxcd/flux2/releases/download/v${FLUX_VERSION}/install.yaml
+          mediaType: application/yaml
 
   # -------------------------------------------------------------------------
   # Prerequisite: kro (Kubernetes Resource Orchestrator)
