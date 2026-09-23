@@ -85,9 +85,12 @@ jobs:
 
       - name: Push OCM bundle to ghcr.io
         working-directory: ocm
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN }} ocm transfer ctf \
+          OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          ocm transfer ctf \
             --overwrite \
             --copy-resources \
             greenhouse-bundle.ctf \
-            oci://ghcr.io/${{ github.repository_owner }}/greenhouse
+            oci://ghcr.io/${OWNER}/greenhouse
