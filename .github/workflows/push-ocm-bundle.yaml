@@ -49,27 +49,45 @@ jobs:
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
           echo "Building OCM bundle for greenhouse v${VERSION}"
 
-      - name: Package Helm charts and fetch prereqs
-        working-directory: ocm
-        run: make -f Makefile.ocm package fetch-prereqs
-        env:
-          GREENHOUSE_VERSION: ${{ steps.vars.outputs.version }}
+      - name: Resolve greenhouse chart dependencies
+        run: helm dependency update charts/greenhouse
 
       - name: Build OCM CTF archive
         working-directory: ocm
-        run: make -f Makefile.ocm build
-        env:
-          GREENHOUSE_VERSION: ${{ steps.vars.outputs.version }}
+        run: |
+          ocm add componentversions \
+            --addenv \
+            --file greenhouse-bundle.ctf \
+            --create \
+            component-constructor.yaml \
+            GREENHOUSE_VERSION=${{ steps.vars.outputs.version }} \
+            "GREENHOUSE_IMAGE_REF=ghcr.io/cloudoperators/greenhouse:v${{ steps.vars.outputs.version }}" \
+            CERT_MANAGER_VERSION=1.16.1 \
+            FLUX_VERSION=2.15.0 \
+            KRO_VERSION=0.9.4 \
+            OCM_CONTROLLER_VERSION=0.33.0
 
       - name: Verify bundle contents
         working-directory: ocm
-        run: make -f Makefile.ocm verify
-        env:
-          GREENHOUSE_VERSION: ${{ steps.vars.outputs.version }}
+        run: |
+          ocm get componentversion --repo directory::./greenhouse-bundle.ctf \
+            github.com/cloudoperators/greenhouse:${{ steps.vars.outputs.version }}
+          ocm get componentversion --repo directory::./greenhouse-bundle.ctf \
+            github.com/cloudoperators/greenhouse/core:${{ steps.vars.outputs.version }}
+          ocm get componentversion --repo directory::./greenhouse-bundle.ctf \
+            github.com/cloudoperators/greenhouse/prerequisites/cert-manager:1.16.1
+          ocm get componentversion --repo directory::./greenhouse-bundle.ctf \
+            github.com/cloudoperators/greenhouse/prerequisites/flux:2.15.0
+          ocm get componentversion --repo directory::./greenhouse-bundle.ctf \
+            github.com/cloudoperators/greenhouse/prerequisites/kro:0.9.4
+          ocm get componentversion --repo directory::./greenhouse-bundle.ctf \
+            github.com/cloudoperators/greenhouse/prerequisites/ocm-controller:0.33.0
 
       - name: Push OCM bundle to ghcr.io
         working-directory: ocm
-        run: make -f Makefile.ocm push
-        env:
-          GREENHOUSE_VERSION: ${{ steps.vars.outputs.version }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN }} ocm transfer ctf \
+            --overwrite \
+            --copy-resources \
+            greenhouse-bundle.ctf \
+            oci://ghcr.io/${{ github.repository_owner }}/greenhouse

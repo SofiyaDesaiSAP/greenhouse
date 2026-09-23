@@ -1,5 +1,4 @@
 GREENHOUSE_VERSION        ?= 0.16.1
-GREENHOUSE_CHART_VERSION  ?= 0.23.0
 GREENHOUSE_IMAGE_REF      ?= ghcr.io/cloudoperators/greenhouse:v$(GREENHOUSE_VERSION)
 CERT_MANAGER_VERSION      ?= 1.16.1
 FLUX_VERSION              ?= 2.15.0
@@ -15,13 +14,12 @@ OCM_REGISTRY ?= ghcr.io/sofiyadesaisap/greenhouse
 GITHUB_TOKEN ?=
 
 GREENHOUSE_SRC     ?= ..
-CHARTS_DIR         := charts
 SHOOT_KUBECONFIG   ?= $(or $(KUBECONFIG),../../greenhouse-kubeconfig.yaml)
 GITHUB_USER        ?= SofiyaDesaiSAP
 
 KC := KUBECONFIG=$(SHOOT_KUBECONFIG)
 
-.PHONY: all help package fetch-prereqs build push verify trigger-workflow deploy-apply \
+.PHONY: all help dep-update build push verify trigger-workflow deploy-apply \
         deploy-instance clean \
         bootstrap-flux install-kro install-cert-manager install-ocm-controller grant-helm-rbac \
         install-prometheus-crds install-flux-extension-stubs \
@@ -36,10 +34,11 @@ help:
 	@echo ""
 	@echo "── Bundle ────────────────────────────────────────────────────────────"
 	@echo "  make trigger-workflow               - trigger push-ocm-bundle GitHub Actions workflow (recommended)"
-	@echo "  make package        - helm dependency update + helm package (greenhouse chart only)"
-	@echo "  make fetch-prereqs  - fetch ocm-controller chart (v-prefix OCI tag)"
+	@echo "  make dep-update     - helm dependency update for greenhouse chart (file:// subcharts)"
+	@echo "                        Run once on a fresh checkout; safe to re-run"
 	@echo "  make build          - build OCM CTF archive (greenhouse-bundle.ctf)"
-	@echo "  make push           - push CTF to OCM_REGISTRY=$(OCM_REGISTRY)  (local alternative to workflow)"
+	@echo "                        OCM fetches all prereq charts directly from their registries"
+	@echo "  make push           - push CTF to OCM_REGISTRY=$(OCM_REGISTRY)"
 	@echo "  make verify         - inspect component versions in local archive"
 	@echo ""
 	@echo "── Cluster bootstrap (fresh cluster, run once) ───────────────────────"
@@ -84,40 +83,21 @@ help:
 	@echo "Kubeconfig: SHOOT_KUBECONFIG=$(SHOOT_KUBECONFIG)"
 
 # -----------------------------------------------------------------------
-# Step 1: package the greenhouse helm chart (resolves file:// deps + OCI)
+# Step 1: resolve greenhouse chart's file:// subchart dependencies.
+# Only needed on a fresh checkout (or after adding a new subchart).
+# OCM's helm input type packages the chart directory directly — it does not
+# run helm dep update itself, so this one step remains necessary.
 # -----------------------------------------------------------------------
-package: $(CHARTS_DIR)
+dep-update:
 	helm dependency update $(GREENHOUSE_SRC)/charts/greenhouse
-	helm package $(GREENHOUSE_SRC)/charts/greenhouse \
-	  --version $(GREENHOUSE_VERSION) \
-	  --destination $(CHARTS_DIR)/
-
-# Fetch prerequisite charts that require pre-downloading (OCI v-prefix tags, or
-# helm input type unreliable in CI). All charts use file input in component-constructor.yaml.
-fetch-prereqs: $(CHARTS_DIR)
-	helm pull oci://ghcr.io/open-component-model/helm/ocm-controller \
-	  --version v$(OCM_CONTROLLER_VERSION) \
-	  --destination $(CHARTS_DIR)/
-	helm pull cert-manager \
-	  --repo https://charts.jetstack.io \
-	  --version v$(CERT_MANAGER_VERSION) \
-	  --destination $(CHARTS_DIR)/
-	helm pull flux2 \
-	  --repo https://fluxcd-community.github.io/helm-charts \
-	  --version $(FLUX_VERSION) \
-	  --destination $(CHARTS_DIR)/
-	helm pull oci://registry.k8s.io/kro/charts/kro \
-	  --version $(KRO_VERSION) \
-	  --destination $(CHARTS_DIR)/
-
-$(CHARTS_DIR):
-	mkdir -p $(CHARTS_DIR)
 
 # -----------------------------------------------------------------------
-# Step 2: build the OCM CTF (Common Transport Format) archive
+# Step 2: build the OCM CTF (Common Transport Format) archive.
+# OCM fetches all prereq charts directly from their source registries/repos.
+# The greenhouse chart is packaged from the local directory.
 # kro-rgd is a plain YAML file (deploy/kro-rgd.yaml) — no Helm packaging needed.
 # -----------------------------------------------------------------------
-build: $(CHARTS_DIR)/greenhouse-$(GREENHOUSE_VERSION).tgz
+build:
 	rm -rf greenhouse-bundle.ctf
 	ocm add componentversions \
 	  --addenv \
@@ -125,15 +105,11 @@ build: $(CHARTS_DIR)/greenhouse-$(GREENHOUSE_VERSION).tgz
 	  --create \
 	  component-constructor.yaml \
 	  GREENHOUSE_VERSION=$(GREENHOUSE_VERSION) \
-	  GREENHOUSE_CHART_VERSION=$(GREENHOUSE_CHART_VERSION) \
 	  "GREENHOUSE_IMAGE_REF=$(GREENHOUSE_IMAGE_REF)" \
 	  CERT_MANAGER_VERSION=$(CERT_MANAGER_VERSION) \
 	  FLUX_VERSION=$(FLUX_VERSION) \
 	  KRO_VERSION=$(KRO_VERSION) \
 	  OCM_CONTROLLER_VERSION=$(OCM_CONTROLLER_VERSION)
-
-$(CHARTS_DIR)/greenhouse-$(GREENHOUSE_VERSION).tgz:
-	$(MAKE) -f Makefile.ocm package
 
 # -----------------------------------------------------------------------
 # Step 3: push CTF to OCM registry
@@ -143,6 +119,7 @@ $(CHARTS_DIR)/greenhouse-$(GREENHOUSE_VERSION).tgz:
 push: greenhouse-bundle.ctf
 	GITHUB_TOKEN=$(GITHUB_TOKEN) ocm transfer ctf \
 	  --overwrite \
+	  --copy-resources \
 	  greenhouse-bundle.ctf \
 	  oci://$(OCM_REGISTRY)
 
@@ -222,7 +199,6 @@ snapshot-urls:
 		2>/dev/null || echo "(no OCIRepositories yet)"
 
 clean:
-	find $(CHARTS_DIR) -maxdepth 1 -name "*.tgz" -delete 2>/dev/null || true
 	rm -rf greenhouse-bundle.ctf
 
 # -----------------------------------------------------------------------

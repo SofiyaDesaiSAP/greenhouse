@@ -3,18 +3,18 @@
 # OCM Component Descriptor for Greenhouse
 #
 # Variables (set via env or make):
-#   GREENHOUSE_VERSION        - greenhouse app version, e.g. v0.16.1
-#   GREENHOUSE_CHART_VERSION  - helm chart version, e.g. 0.23.0
+#   GREENHOUSE_VERSION        - greenhouse app version, e.g. 0.16.1
 #   GREENHOUSE_IMAGE_REF      - full image ref, e.g. ghcr.io/cloudoperators/greenhouse:v0.16.1
-#   CERT_MANAGER_VERSION      - e.g. v1.16.1
+#   CERT_MANAGER_VERSION      - e.g. 1.16.1  (no v-prefix; OCM adds v where required)
 #   FLUX_VERSION              - e.g. 2.15.0
 #   KRO_VERSION               - e.g. 0.9.4
-#   OCM_CONTROLLER_VERSION    - e.g. v0.8.0
+#   OCM_CONTROLLER_VERSION    - e.g. 0.33.0  (no v-prefix; OCM adds v where required)
 #
 # Workflow:
-#   make package   # helm package → charts/greenhouse-<CHART_VERSION>.tgz
-#   make build     # ocm add componentversions → greenhouse-bundle.ctf
-#   make push      # ocm transfer → OCM_REGISTRY
+#   make dep-update  # helm dependency update for greenhouse chart (file:// subcharts only)
+#   make build       # ocm add componentversions → greenhouse-bundle.ctf
+#                    # OCM fetches all prereq charts directly from their registries
+#   make push        # ocm transfer ctf → OCM_REGISTRY
 #
 # Prerequisites bundled as componentReferences:
 #   cert-manager, flux, kro, ocm-controller
@@ -29,6 +29,8 @@ components:
 
   # -------------------------------------------------------------------------
   # Prerequisite: cert-manager
+  # OCM fetches directly from https://charts.jetstack.io — no helm pull needed.
+  # jetstack chart versions use v-prefix (v1.16.1), hence "v${CERT_MANAGER_VERSION}".
   # -------------------------------------------------------------------------
   - name: github.com/cloudoperators/greenhouse/prerequisites/cert-manager
     version: ${CERT_MANAGER_VERSION}
@@ -42,13 +44,20 @@ components:
         type: helmChart
         version: ${CERT_MANAGER_VERSION}
         input:
-          type: file
-          path: charts/cert-manager-v${CERT_MANAGER_VERSION}.tgz
-          mediaType: application/vnd.cncf.helm.chart.content.v1.tar+gzip
-          compress: false
+          type: helm
+          path: cert-manager
+          helmRepository: https://charts.jetstack.io
+          version: v${CERT_MANAGER_VERSION}
 
   # -------------------------------------------------------------------------
-  # Prerequisite: flux2
+  # Prerequisite: flux2 (greenhouse-customized kustomization)
+  # Bundles config/samples/flux/ from this repo — the kustomization overlay that:
+  #   - patches NetworkPolicy to allow greenhouse namespace access to flux artifacts
+  #     (no extra RBAC needed for greenhouse controller)
+  #   - enables ExternalArtifact feature gate on kustomize-controller
+  #   - removes unused image-automation-controller + image-reflector-controller
+  # The flux version pinned in the kustomization (v2.9.5) is intentional — update
+  # config/samples/flux/kustomization.yaml to change it.
   # -------------------------------------------------------------------------
   - name: github.com/cloudoperators/greenhouse/prerequisites/flux
     version: ${FLUX_VERSION}
@@ -58,17 +67,17 @@ components:
       - name: cloudoperators.github.com/role
         value: prerequisite
     resources:
-      - name: flux2-chart
-        type: helmChart
+      - name: flux-kustomization
+        type: blob
         version: ${FLUX_VERSION}
         input:
-          type: file
-          path: charts/flux2-${FLUX_VERSION}.tgz
-          mediaType: application/vnd.cncf.helm.chart.content.v1.tar+gzip
-          compress: false
+          type: dir
+          path: ../config/samples/flux
+          compress: true
 
   # -------------------------------------------------------------------------
   # Prerequisite: kro (Kubernetes Resource Orchestrator)
+  # OCM fetches directly from OCI registry — no helm pull needed.
   # -------------------------------------------------------------------------
   - name: github.com/cloudoperators/greenhouse/prerequisites/kro
     version: ${KRO_VERSION}
@@ -82,13 +91,15 @@ components:
         type: helmChart
         version: ${KRO_VERSION}
         input:
-          type: file
-          path: charts/kro-${KRO_VERSION}.tgz
-          mediaType: application/vnd.cncf.helm.chart.content.v1.tar+gzip
-          compress: false
+          type: helm
+          path: kro
+          helmRepository: oci://registry.k8s.io/kro/charts
+          version: ${KRO_VERSION}
 
   # -------------------------------------------------------------------------
   # Prerequisite: ocm-controller
+  # OCM fetches directly from ghcr.io OCI — no helm pull needed.
+  # OCI tag uses v-prefix (v0.33.0), hence "v${OCM_CONTROLLER_VERSION}".
   # -------------------------------------------------------------------------
   - name: github.com/cloudoperators/greenhouse/prerequisites/ocm-controller
     version: ${OCM_CONTROLLER_VERSION}
@@ -102,16 +113,17 @@ components:
         type: helmChart
         version: ${OCM_CONTROLLER_VERSION}
         input:
-          type: file
-          path: charts/ocm-controller-v${OCM_CONTROLLER_VERSION}.tgz
-          mediaType: application/vnd.cncf.helm.chart.content.v1.tar+gzip
-          compress: false
+          type: helm
+          path: ocm-controller
+          helmRepository: oci://ghcr.io/open-component-model/helm
+          version: v${OCM_CONTROLLER_VERSION}
 
   # -------------------------------------------------------------------------
   # Greenhouse core (chart + image)
-  # Run `make package` first to produce charts/greenhouse-<CHART_VERSION>.tgz
-  # GREENHOUSE_CHART_VERSION is the helm chart version (0.23.0)
-  # GREENHOUSE_VERSION is the app/image version (v0.16.1)
+  # OCM packages the chart directory directly — no helm package needed.
+  # Prerequisite: run `make dep-update` once if ../charts/greenhouse/charts/ is empty
+  # (needed to resolve the file:// subchart dependencies idproxy, cors-proxy, etc.)
+  # GREENHOUSE_VERSION is used for both the component version and the chart version hint.
   # GREENHOUSE_IMAGE_REF is the full OCI image reference
   # -------------------------------------------------------------------------
   - name: github.com/cloudoperators/greenhouse/core
@@ -124,14 +136,14 @@ components:
     resources:
 
       # Greenhouse umbrella chart (bundles manager, idproxy, cors-proxy, authz, dashboard subcharts)
+      # OCM packages ../charts/greenhouse/ directory as an OCI artifact set.
       - name: greenhouse-chart
         type: helmChart
         version: ${GREENHOUSE_VERSION}
         input:
-          type: file
-          path: charts/greenhouse-${GREENHOUSE_VERSION}.tgz
-          mediaType: application/vnd.cncf.helm.chart.content.v1.tar+gzip
-          compress: false
+          type: helm
+          path: ../charts/greenhouse
+          version: ${GREENHOUSE_VERSION}
 
       # Single image used by controller-manager, idproxy, cors-proxy, and authz subcharts
       # Pass GREENHOUSE_IMAGE_REF=ghcr.io/cloudoperators/greenhouse:v0.16.1
