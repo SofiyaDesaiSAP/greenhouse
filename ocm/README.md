@@ -1,5 +1,77 @@
 # Bundling Greenhouse as an OCM Artifact and Pushing to GHCR
 
+## Architecture
+
+```mermaid
+flowchart TD
+    classDef oci      fill:#dbeafe,stroke:#2563eb,color:#1e3a5f
+    classDef local    fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef wget     fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    classDef extref   fill:#f1f5f9,stroke:#94a3b8,color:#64748b
+    classDef process  fill:#f3e8ff,stroke:#7c3aed,color:#3b0764
+    classDef ctf      fill:#fff7ed,stroke:#ea580c,color:#7c2d12
+    classDef ghcr     fill:#fce7f3,stroke:#db2777,color:#831843
+
+    %% ── Remote OCI registries ──────────────────────────────────────────
+    subgraph OCI["Remote OCI Registries  (OCM fetches at build time)"]
+        CM["ghcr.io/cloudoperators/\ngreenhouse-extensions/charts\ncert-manager : 1.20.1\nhelmChart"]:::oci
+        KRO_SRC["registry.k8s.io/kro/charts\nkro : 0.9.4\nhelmChart"]:::oci
+        OCM_SRC["ghcr.io/open-component-model/helm\nocm-controller : v0.33.0\nhelmChart"]:::oci
+    end
+
+    %% ── Remote URL ──────────────────────────────────────────────────────
+    subgraph HTTP["Remote URL  (downloaded at push via --copy-resources)"]
+        FLUX_SRC["github.com/fluxcd/flux2\nreleases/install.yaml : v2.15.0\nblob · wget access type"]:::wget
+    end
+
+    %% ── Local sources ───────────────────────────────────────────────────
+    subgraph REPO["Local Repository"]
+        GH_CHART["charts/greenhouse/\ngreenhouse chart : 0.16.1\nhelmChart  (subcharts pre-resolved)"]:::local
+        RGD["deploy/kro-rgd.yaml\nkro ResourceGraphDefinition\nblob"]:::local
+    end
+
+    %% ── External reference (not copied) ─────────────────────────────────
+    GH_IMG["ghcr.io/cloudoperators/greenhouse : v0.16.1\nociImage  —  external reference, NOT copied\npoints back to source registry"]:::extref
+
+    %% ── Build step ──────────────────────────────────────────────────────
+    BUILD(["ocm add componentversions\ncomponent-constructor.yaml"]):::process
+    CTF[("greenhouse-bundle.ctf\nCommon Transport Format\nlocal OCI layout on disk")]:::ctf
+
+    %% ── Push step ───────────────────────────────────────────────────────
+    PUSH(["ocm transfer ctf\n--overwrite  --copy-resources"]):::process
+
+    %% ── GHCR output ─────────────────────────────────────────────────────
+    subgraph GHCR["ghcr.io/org/greenhouse  —  GitHub Container Registry"]
+        direction TB
+        TOP["github.com/cloudoperators/greenhouse : 0.16.1\ntop-level component · references all below"]:::ghcr
+        CORE["…/greenhouse/core : 0.16.1\ngreenhouse-chart  ·  greenhouse-image ref  ·  kro-rgd"]:::ghcr
+        CERTC["…/prerequisites/cert-manager : 1.20.1\ncert-manager-chart"]:::ghcr
+        FLUXC["…/prerequisites/flux : 2.15.0\nflux-install  (embedded YAML blob)"]:::ghcr
+        KROC["…/prerequisites/kro : 0.9.4\nkro-chart"]:::ghcr
+        OCMC["…/prerequisites/ocm-controller : 0.33.0\nocm-controller-chart"]:::ghcr
+        TOP --> CORE
+        TOP --> CERTC
+        TOP --> FLUXC
+        TOP --> KROC
+        TOP --> OCMC
+    end
+
+    %% ── Edges ───────────────────────────────────────────────────────────
+    CM      -->|"helmChart"| BUILD
+    KRO_SRC -->|"helmChart"| BUILD
+    OCM_SRC -->|"helmChart"| BUILD
+    FLUX_SRC-.->|"blob / wget"| BUILD
+    GH_CHART-->|"helmChart"| BUILD
+    RGD     -->|"blob / file"| BUILD
+    GH_IMG  -. "ociImage ref\nnot embedded" .-> BUILD
+
+    BUILD --> CTF
+    CTF   --> PUSH
+    PUSH  --> GHCR
+```
+
+---
+
 ## The Story
 
 You are a platform engineer. Your job is to ship the entire **Greenhouse platform** — its
