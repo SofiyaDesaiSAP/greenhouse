@@ -1,0 +1,80 @@
+# Kyverno ClusterPolicy — verify keyless (Sigstore) container-image signatures.
+#
+# Rationale and full flow: ../keyless-signing.md  (§4 Domain B).
+#
+# WHY KYVERNO (not Gatekeeper): Kyverno has a native cosign verifier. OPA/Gatekeeper
+# has none — it would need the Ratify external-data provider to do the actual cosign
+# verification. For this stack Kyverno is the simpler, correct choice.
+#
+# WHAT THIS GATES: the container IMAGES pulled by the kubelet directly from the RBSC
+# registry (greenhouse controller-manager/idproxy/cors-proxy/authz, dashboard,
+# postgres). These are NOT repackaged by the OCM controller, so their cosign
+# signatures survive the air-gap transfer and can be enforced at pod admission.
+# (Helm CHART integrity is attested separately by the OCM signature — see §3/§5.)
+#
+# ISSUER/IDENTITY: keyless pins issuer + subject. Because signing is done BY HAND
+# from a laptop (not a pipeline), the identity is YOUR email and the OIDC provider
+# you logged in with — not a CI workflow URL. Swap the two values below to match.
+#
+# AIR-GAP: `rekor.ignoreTlog: true` tells Kyverno the Rekor inclusion proof is
+# embedded in the signature bundle (cosign keyless), so no call to rekor.sigstore.dev
+# at admission. The Fulcio/Rekor public keys still come from the mirrored trust root
+# loaded via `make load-sigstore-root`.
+#
+# OWNERSHIP CAVEAT: this gates images served from RBSC. It is only meaningful once
+# you RE-HOST the greenhouse/dashboard images under a registry you control and sign
+# THOSE copies — you cannot sign upstream ghcr.io/cloudoperators images. Until then,
+# image integrity is covered by the OCM component signature (make verify-sigstore).
+---
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: verify-greenhouse-image-signatures
+  annotations:
+    policies.kyverno.io/title: Verify Greenhouse Image Signatures (keyless)
+    policies.kyverno.io/category: Supply Chain Security
+    policies.kyverno.io/description: >-
+      Requires every container image in the greenhouse / cert-manager / ocm-system
+      namespaces that originates from the RBSC registry to carry a valid Sigstore
+      keyless signature from the trusted CI OIDC identity.
+spec:
+  # Start in Audit to observe before blocking; flip to Enforce once signatures verify.
+  validationFailureAction: Audit
+  background: false
+  webhookTimeoutSeconds: 30
+  failurePolicy: Fail
+  rules:
+    - name: verify-rbsc-images
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              namespaces:
+                - greenhouse
+                - cert-manager
+                - ocm-system
+      verifyImages:
+        # Only enforce on images served from the on-site RBSC registry. Images from
+        # elsewhere (e.g. kube-system infra) are out of scope for this policy.
+        - imageReferences:
+            - "ghcr.io/*/greenhouse-rbsc/**"
+          # mutateDigest rewrites the tag to the verified digest so the admitted
+          # pod is pinned to exactly what was verified (defeats tag-mutation TOCTOU).
+          mutateDigest: true
+          verifyDigest: true
+          required: true
+          attestors:
+            - count: 1
+              entries:
+                # ---- laptop keyless identity (your OIDC login) ----
+                # Google login example. Swap issuer+subject for your provider:
+                #   GitHub:    issuer https://github.com/login/oauth
+                #   Microsoft: issuer https://login.microsoftonline.com
+                - keyless:
+                    subject: "you@sap.com"
+                    issuer: "https://accounts.google.com"
+                    rekor:
+                      # Air-gapped: proof is embedded in the signature bundle.
+                      # (If you later run a private Rekor, set `url:` to it instead.)
+                      ignoreTlog: true

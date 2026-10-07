@@ -1,5 +1,6 @@
 GREENHOUSE_VERSION        ?= 0.16.1
 GREENHOUSE_IMAGE_REF      ?= ghcr.io/cloudoperators/greenhouse:v$(GREENHOUSE_VERSION)
+DASHBOARD_IMAGE_REF       ?= ghcr.io/cloudoperators/juno-app-greenhouse@sha256:ae366951d37198d05d6b3d5859dec8181530d380ea7b9a8a8cfc5a8f07937631
 CERT_MANAGER_VERSION      ?= 1.20.1
 FLUX_VERSION              ?= 2.15.0
 KRO_VERSION               ?= 0.9.4
@@ -14,8 +15,26 @@ OCM_REGISTRY ?= ghcr.io/sofiyadesaisap/greenhouse
 GITHUB_TOKEN ?=
 
 GREENHOUSE_SRC     ?= ..
-SHOOT_KUBECONFIG   ?= $(or $(KUBECONFIG),../../greenhouse-kubeconfig.yaml)
+SHOOT_KUBECONFIG   ?= $(or $(KUBECONFIG),../../key1-kubeconfig.yaml)
 GITHUB_USER        ?= SofiyaDesaiSAP
+
+# -----------------------------------------------------------------------
+# Keyless (Sigstore) signing — see keyless-signing.md
+# Signed by HAND from your laptop: `ocm sign cv --keyless -S sigstore-v2` opens a
+# browser for OIDC login. The signing identity is YOUR email + the OIDC provider,
+# NOT a CI pipeline. Override these to match whichever provider you log in with:
+#   Google:    SIG_OIDC_ISSUER=https://accounts.google.com      SIG_IDENTITY=you@sap.com
+#   GitHub:    SIG_OIDC_ISSUER=https://github.com/login/oauth   SIG_IDENTITY=<gh-email>
+#   Microsoft: SIG_OIDC_ISSUER=https://login.microsoftonline.com SIG_IDENTITY=<upn>
+SIG_NAME           ?= greenhouse-release
+SIG_OIDC_ISSUER    ?= https://accounts.google.com
+SIG_IDENTITY       ?= you@sap.com
+# sigstore handler: sigstore-v2 (newer) or sigstore (v1). Both in OCM v0.48.0.
+SIG_ALGORITHM      ?= sigstore-v2
+# Mirrored Sigstore trust root for air-gapped verification (produced out-of-band).
+SIGSTORE_TUF_CACHE ?= sigstore-tuf-cache.tgz
+# RBSC (on-site / air-gapped) registry — target of the transfer step.
+RBSC_REGISTRY      ?= ghcr.io/sofiyadesaisap/greenhouse-rbsc
 
 KC := KUBECONFIG=$(SHOOT_KUBECONFIG)
 
@@ -25,7 +44,9 @@ KC := KUBECONFIG=$(SHOOT_KUBECONFIG)
         install-prometheus-crds install-flux-extension-stubs \
         create-greenhouse-ns create-registry-secret \
         create-values-secret copy-tls-secret deploy-status deploy-watch \
-        deploy-reconcile deploy-reconcile-ocm deploy-full flux-fix snapshot-urls
+        deploy-reconcile deploy-reconcile-ocm deploy-full flux-fix snapshot-urls \
+        sign-sigstore verify-sigstore sign-images transfer-rbsc \
+        install-kyverno load-sigstore-root
 
 all: help
 
@@ -40,6 +61,14 @@ help:
 	@echo "                        OCM fetches all prereq charts directly from their registries"
 	@echo "  make push           - push CTF to OCM_REGISTRY=$(OCM_REGISTRY)"
 	@echo "  make verify         - inspect component versions in local archive"
+	@echo ""
+	@echo "── Signing (keyless / sigstore — see keyless-signing.md) ─────────────"
+	@echo "  make sign-sigstore    - sign the OCM component version (keyless)"
+	@echo "  make verify-sigstore  - verify OCM signature (THE air-gap gate; run before transfer)"
+	@echo "  make sign-images      - cosign sign the greenhouse + dashboard images (keyless)"
+	@echo "  make transfer-rbsc    - transfer to RBSC + carry image signatures across"
+	@echo "  make install-kyverno  - install Kyverno + apply image-verify ClusterPolicy"
+	@echo "  make load-sigstore-root - load mirrored TUF trust root for offline verify"
 	@echo ""
 	@echo "── Cluster bootstrap (fresh cluster, run once) ───────────────────────"
 	@echo "  make bootstrap-flux         - install Flux controllers on cluster"
@@ -73,6 +102,7 @@ help:
 	@echo ""
 	@echo "Versions:"
 	@echo "  GREENHOUSE_VERSION=$(GREENHOUSE_VERSION)"
+	@echo "  DASHBOARD_IMAGE_REF=$(DASHBOARD_IMAGE_REF)"
 	@echo "  CERT_MANAGER_VERSION=$(CERT_MANAGER_VERSION)"
 	@echo "  FLUX_VERSION=$(FLUX_VERSION)"
 	@echo "  KRO_VERSION=$(KRO_VERSION)"
@@ -106,6 +136,7 @@ build:
 	  component-constructor.yaml \
 	  GREENHOUSE_VERSION=$(GREENHOUSE_VERSION) \
 	  "GREENHOUSE_IMAGE_REF=$(GREENHOUSE_IMAGE_REF)" \
+	  "DASHBOARD_IMAGE_REF=$(DASHBOARD_IMAGE_REF)" \
 	  CERT_MANAGER_VERSION=$(CERT_MANAGER_VERSION) \
 	  FLUX_VERSION=$(FLUX_VERSION) \
 	  KRO_VERSION=$(KRO_VERSION) \
@@ -149,6 +180,63 @@ verify: greenhouse-bundle.ctf
 	  github.com/cloudoperators/greenhouse/prerequisites/kro:$(KRO_VERSION)
 	ocm get componentversion --repo directory::./greenhouse-bundle.ctf \
 	  github.com/cloudoperators/greenhouse/prerequisites/ocm-controller:$(OCM_CONTROLLER_VERSION)
+
+# =======================================================================
+# Keyless signing & verification  (full rationale: keyless-signing.md)
+# =======================================================================
+
+# Sign the OCM component version with Sigstore keyless. One signature over the
+# component-descriptor digest transitively covers every chart + image + sub-component.
+# Opens a browser for OIDC login — run this interactively from your laptop.
+sign-sigstore: greenhouse-bundle.ctf
+	@echo "Signing OCM component version (sigstore keyless) — a browser will open for login..."
+	ocm sign componentversions \
+	  --keyless \
+	  --signature $(SIG_NAME) \
+	  --algorithm $(SIG_ALGORITHM) \
+	  --repo directory::./greenhouse-bundle.ctf \
+	  github.com/cloudoperators/greenhouse:$(GREENHOUSE_VERSION)
+	@echo "Signed. The Sigstore bundle (sig + cert + Rekor proof) is embedded in the descriptor."
+
+# THE air-gap gate. Run on the connected transfer host BEFORE pushing to RBSC.
+# A tampered chart or image anywhere in the bundle fails this single check.
+# Add OCM_VERIFY_LOCAL=1 to force fully-offline verification (-L, embedded bundle only).
+# Usage: make verify-sigstore OCM_REGISTRY=ghcr.io/<owner>/greenhouse
+verify-sigstore:
+	@echo "Verifying OCM signature '$(SIG_NAME)' (expected identity: $(SIG_IDENTITY) via $(SIG_OIDC_ISSUER))"
+	ocm verify componentversions \
+	  --keyless \
+	  --signature $(SIG_NAME) \
+	  $(if $(OCM_VERIFY_LOCAL),--local,) \
+	  --repo oci://$(OCM_REGISTRY) \
+	  github.com/cloudoperators/greenhouse:$(GREENHOUSE_VERSION)
+	@echo "OCM signature OK — safe to transfer across the air gap."
+
+# Sign the container images (keyless, browser login). ONLY meaningful for images
+# you OWN — the default refs point at upstream ghcr.io/cloudoperators, which you
+# cannot push signatures to. Re-host images under a registry you control first,
+# then override GREENHOUSE_IMAGE_REF / DASHBOARD_IMAGE_REF to those copies.
+# Until then, image integrity is covered by the OCM signature (sign-sigstore).
+sign-images:
+	@echo "Signing container images (sigstore keyless) — a browser will open..."
+	@echo "NOTE: only works for images you have push access to (not upstream cloudoperators)."
+	COSIGN_YES=true cosign sign --recursive $(GREENHOUSE_IMAGE_REF)
+	COSIGN_YES=true cosign sign $(DASHBOARD_IMAGE_REF)
+	@echo "Images signed. Inspect with: cosign tree $(GREENHOUSE_IMAGE_REF)"
+
+# Transfer to RBSC AND carry the cosign signatures across (--copy-resources alone
+# copies image blobs but not always the .sig referrers). See keyless-signing.md §4.
+transfer-rbsc:
+	@test -n "$(GITHUB_TOKEN)" || (echo "Error: GITHUB_TOKEN not set"; exit 1)
+	GITHUB_TOKEN=$(GITHUB_TOKEN) ocm transfer componentversion \
+	  --copy-resources --recursive --overwrite \
+	  "oci://$(OCM_REGISTRY)//github.com/cloudoperators/greenhouse:$(GREENHOUSE_VERSION)" \
+	  oci://$(RBSC_REGISTRY)
+	@echo "Re-attaching image signatures at RBSC..."
+	-COSIGN_YES=true cosign copy --only-sig \
+	  $(GREENHOUSE_IMAGE_REF) \
+	  $(RBSC_REGISTRY)/cloudoperators/greenhouse:v$(GREENHOUSE_VERSION) 2>/dev/null || \
+	  echo "  (cosign copy --only-sig unavailable in this cosign version — see keyless-signing.md §4)"
 
 # -----------------------------------------------------------------------
 # Step 4: apply deploy manifests to the shoot cluster
@@ -200,6 +288,89 @@ snapshot-urls:
 
 clean:
 	rm -rf greenhouse-bundle.ctf
+
+# clean-cluster: remove ALL greenhouse-related components from the cluster.
+# Safe to run regardless of install method (Helm or kubectl apply).
+# Deletes: Helm releases, OCM/Flux manifests, kro RGD, GreenhouseStack instances,
+#          namespaces, CRDs (cert-manager, OCM, Flux, kro), RBAC.
+# Also removes leftover keystone namespaces (monsoon3, vault, external-secrets)
+# so the cluster is fully clean before a fresh greenhouse deployment.
+.PHONY: clean-cluster
+clean-cluster:
+	@echo "Cleaning all greenhouse-related components from the cluster..."
+	@echo ""
+	@echo "── GreenhouseStack instances + kro RGD ──────────────────────────"
+	-$(KC) kubectl delete greenhousestack --all -n greenhouse --ignore-not-found 2>/dev/null || true
+	-$(KC) kubectl delete resourcegraphdefinition greenhouse-stack -n greenhouse --ignore-not-found 2>/dev/null || true
+	@echo ""
+	@echo "── OCM manifests (ComponentVersion + Resources + Deployer) ──────"
+	-$(KC) kubectl delete -k deploy/ --ignore-not-found 2>/dev/null || true
+	@echo ""
+	@echo "── Helm releases ────────────────────────────────────────────────"
+	-$(KC) helm uninstall greenhouse       -n greenhouse  2>/dev/null || true
+	-$(KC) helm uninstall ocm-controller   -n ocm-system  2>/dev/null || true
+	-$(KC) helm uninstall cert-manager     -n cert-manager 2>/dev/null || true
+	-$(KC) helm uninstall kro              -n kro-system   2>/dev/null || true
+	-$(KC) helm uninstall prometheus-crds  -n monitoring   2>/dev/null || true
+	@echo ""
+	@echo "── Namespaces (waits for deletion) ──────────────────────────────"
+	@for ns in greenhouse cert-manager ocm-system flux-system kro-system monitoring \
+	           monsoon3 vault external-secrets; do \
+	  $(KC) kubectl delete namespace $$ns --ignore-not-found 2>/dev/null && \
+	    echo "  deleted: $$ns" || true; \
+	done
+	@echo ""
+	@echo "── cert-manager CRDs ────────────────────────────────────────────"
+	-$(KC) kubectl delete crd \
+	  certificaterequests.cert-manager.io \
+	  certificates.cert-manager.io \
+	  challenges.acme.cert-manager.io \
+	  clusterissuers.cert-manager.io \
+	  issuers.cert-manager.io \
+	  orders.acme.cert-manager.io \
+	  --ignore-not-found 2>/dev/null || true
+	@echo ""
+	@echo "── OCM controller CRDs ──────────────────────────────────────────"
+	-$(KC) kubectl delete crd \
+	  componentdescriptors.delivery.ocm.software \
+	  componentversions.delivery.ocm.software \
+	  configurations.delivery.ocm.software \
+	  fluxdeployers.delivery.ocm.software \
+	  localizations.delivery.ocm.software \
+	  resources.delivery.ocm.software \
+	  snapshots.delivery.ocm.software \
+	  --ignore-not-found 2>/dev/null || true
+	@echo ""
+	@echo "── Flux CRDs ────────────────────────────────────────────────────"
+	-$(KC) kubectl delete crd \
+	  helmreleases.helm.toolkit.fluxcd.io \
+	  helmcharts.source.toolkit.fluxcd.io \
+	  helmrepositories.source.toolkit.fluxcd.io \
+	  ocirepositories.source.toolkit.fluxcd.io \
+	  gitrepositories.source.toolkit.fluxcd.io \
+	  kustomizations.kustomize.toolkit.fluxcd.io \
+	  alerts.notification.toolkit.fluxcd.io \
+	  receivers.notification.toolkit.fluxcd.io \
+	  providers.notification.toolkit.fluxcd.io \
+	  buckets.source.toolkit.fluxcd.io \
+	  --ignore-not-found 2>/dev/null || true
+	@echo ""
+	@echo "── kro CRDs ─────────────────────────────────────────────────────"
+	-$(KC) kubectl delete crd \
+	  resourcegraphdefinitions.kro.run \
+	  --ignore-not-found 2>/dev/null || true
+	@echo ""
+	@echo "── Flux extension stub CRDs ─────────────────────────────────────"
+	-$(KC) kubectl delete crd \
+	  artifactgenerators.source.extensions.fluxcd.io \
+	  --ignore-not-found 2>/dev/null || true
+	@echo ""
+	@echo "── Cluster-scoped RBAC ──────────────────────────────────────────"
+	-$(KC) kubectl delete clusterrolebinding helm-controller-cluster-admin \
+	  --ignore-not-found 2>/dev/null || true
+	@echo ""
+	@echo "Cluster cleanup complete. Ready for a fresh greenhouse deployment."
+	@echo "Next: make -f Makefile.ocm deploy-full  (or run bootstrap steps individually)"
 
 # -----------------------------------------------------------------------
 # Cluster bootstrap targets — run once on a fresh cluster
@@ -295,6 +466,34 @@ install-flux-extension-stubs:
 	@echo "Applying Flux extension stub CRDs..."
 	$(KC) kubectl apply -f prereqs/flux-extension-stubs.yaml
 	@echo "Flux extension stub CRDs applied."
+
+# Install Kyverno and apply the image-verification ClusterPolicy.
+# Kyverno verifies cosign signatures natively (unlike Gatekeeper, which needs Ratify).
+install-kyverno:
+	@echo "Installing Kyverno..."
+	$(KC) helm upgrade --install kyverno kyverno \
+		--repo https://kyverno.github.io/kyverno \
+		--namespace kyverno \
+		--create-namespace \
+		--wait --timeout 5m
+	@echo "Applying image-verification ClusterPolicy..."
+	$(KC) kubectl apply -f prereqs/kyverno-verify-images.yaml
+	@echo "Kyverno installed. Policy enforces signed images in greenhouse namespaces."
+
+# Load the mirrored Sigstore trust root into the cluster for OFFLINE keyless
+# verification (air-gap). Run load-sigstore-root ON A CONNECTED HOST first to
+# produce $(SIGSTORE_TUF_CACHE), ship it across the gap, then apply here.
+# Producing the cache (connected host):
+#   cosign initialize --mirror https://tuf-repo-cdn.sigstore.dev
+#   tar czf $(SIGSTORE_TUF_CACHE) -C $$HOME/.sigstore/root .
+load-sigstore-root:
+	@test -f $(SIGSTORE_TUF_CACHE) || (echo "Error: $(SIGSTORE_TUF_CACHE) not found. Produce it on a connected host (see comment above this target)."; exit 1)
+	@echo "Loading Sigstore trust root into kyverno namespace..."
+	$(KC) kubectl create configmap sigstore-tuf-root \
+		--namespace kyverno \
+		--from-file=tuf-cache=$(SIGSTORE_TUF_CACHE) \
+		--dry-run=client -o yaml | $(KC) kubectl apply -f -
+	@echo "Trust root loaded. Kyverno can now verify signatures offline."
 
 # -----------------------------------------------------------------------
 # Secrets and namespace targets

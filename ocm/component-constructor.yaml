@@ -154,6 +154,15 @@ components:
           type: OCIImage/v1
           imageReference: ${GREENHOUSE_IMAGE_REF}
 
+      # Dashboard UI image (separate from the main greenhouse binary)
+      # Pass DASHBOARD_IMAGE_REF=ghcr.io/cloudoperators/juno-app-greenhouse@sha256:<digest>
+      - name: dashboard-image
+        type: ociImage
+        version: ${GREENHOUSE_VERSION}
+        access:
+          type: OCIImage/v1
+          imageReference: ${DASHBOARD_IMAGE_REF}
+
       # kro-rgd: plain YAML manifest containing the kro ResourceGraphDefinition.
       # Applied directly to the cluster by the OCM Deployer (no Helm chart needed).
       - name: kro-rgd

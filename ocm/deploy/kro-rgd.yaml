@@ -20,6 +20,7 @@ spec:
     kind: GreenhouseStack
     spec:
       registryHost: "string"
+      imageRegistry: "string"
       certManagerSnapshotPath: "string"
       certManagerVersion: "string"
       ocmControllerSnapshotPath: "string"
@@ -122,6 +123,20 @@ spec:
             tag: "${schema.spec.greenhouseVersion}"
           certSecretRef:
             name: "${schema.spec.tlsSecretName}"
+          # NOTE on signature verification (see ../keyless-signing.md §5):
+          # spec.verify is intentionally ABSENT. These OCIRepositories pull OCM
+          # *Snapshots* from the in-cluster registry — freshly repackaged, unsigned
+          # artifacts. The original CI chart signature does NOT survive OCM extraction,
+          # so `verify: {provider: cosign}` here would ALWAYS fail. Chart integrity is
+          # attested at the OCM layer instead (`make verify-sigstore`).
+          #
+          # IF you ever switch to Flux pulling charts DIRECTLY from the signed RBSC
+          # registry (no OCM Snapshot indirection), THEN add (match your OIDC login):
+          #   verify:
+          #     provider: cosign
+          #     matchOIDCIdentity:
+          #       - issuer: "^https://accounts.google.com$"
+          #         subject: "^you@sap.com$"
 
     - id: greenhouseHR
       template:
@@ -147,3 +162,23 @@ spec:
               name: "greenhouse-values"
               valuesKey: values.yaml
               optional: false
+          values:
+            manager:
+              controllerManager:
+                image:
+                  repository: "${schema.spec.imageRegistry}/cloudoperators/greenhouse"
+            idproxy:
+              image:
+                repository: "${schema.spec.imageRegistry}/cloudoperators/greenhouse"
+            cors-proxy:
+              image:
+                repository: "${schema.spec.imageRegistry}/cloudoperators/greenhouse"
+            authz:
+              image:
+                repository: "${schema.spec.imageRegistry}/cloudoperators/greenhouse"
+            dashboard:
+              image:
+                repository: "${schema.spec.imageRegistry}/cloudoperators/juno-app-greenhouse"
+            postgresqlng:
+              global:
+                registry: "${schema.spec.imageRegistry}/sapcc"

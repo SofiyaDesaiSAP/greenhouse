@@ -13,6 +13,7 @@ metadata:
   namespace: greenhouse
 spec:
   registryHost: "registry.ocm-system.svc.cluster.local:5000"
+  imageRegistry: "ghcr.io"
 
   certManagerSnapshotPath: "sha-15457104823554620187"
   certManagerVersion: "1.16.1"
