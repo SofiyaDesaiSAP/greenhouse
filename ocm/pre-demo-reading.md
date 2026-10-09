@@ -278,6 +278,66 @@ everything right is the component path.
 
 ---
 
+### Step 5 — If `component-constructor.yaml` was changed (rebuild + re-sign + re-transfer)
+
+Any change to `component-constructor.yaml` (e.g. switching `input.type: helm` to
+`access.type: ociArtifact`, bumping a version, adding a resource) requires a full rebuild
+of the CTF bundle, a new signature, and re-transfer to both GHCR and RBSC.
+
+```bash
+# 1. Rebuild the CTF from scratch
+rm -rf greenhouse-bundle.ctf
+ocm add componentversions \
+  --addenv \
+  --file greenhouse-bundle.ctf \
+  --create \
+  component-constructor.yaml \
+  GREENHOUSE_VERSION=0.16.1 \
+  "GREENHOUSE_IMAGE_REF=ghcr.io/cloudoperators/greenhouse:v0.16.1" \
+  "DASHBOARD_IMAGE_REF=ghcr.io/cloudoperators/juno-app-greenhouse@sha256:ae366951d37198d05d6b3d5859dec8181530d380ea7b9a8a8cfc5a8f07937631" \
+  CERT_MANAGER_VERSION=1.20.1 \
+  FLUX_VERSION=2.15.0 \
+  KRO_VERSION=0.9.4 \
+  OCM_CONTROLLER_VERSION=0.33.0
+
+# 2. Re-sign the new CTF (browser opens for OIDC login)
+ocm sign componentversions \
+  --keyless \
+  --signature greenhouse-release \
+  --algorithm sigstore-v2 \
+  --repo directory::./greenhouse-bundle.ctf \
+  github.com/cloudoperators/greenhouse:0.16.1
+
+# 3. Re-push to GHCR (central registry)
+GITHUB_TOKEN=$GITHUB_TOKEN ocm transfer ctf \
+  --overwrite \
+  --copy-resources \
+  greenhouse-bundle.ctf \
+  oci://ghcr.io/sofiyadesaisap/greenhouse
+
+# 4. Verify the signature on GHCR before transferring to RBSC
+ocm verify componentversions \
+  --keyless \
+  --signature greenhouse-release \
+  --repo oci://ghcr.io/sofiyadesaisap/greenhouse \
+  github.com/cloudoperators/greenhouse:0.16.1
+
+# 5. Re-transfer to RBSC
+ocm transfer componentversion \
+  --copy-resources \
+  --recursive \
+  --overwrite \
+  "oci://ghcr.io/sofiyadesaisap/greenhouse//github.com/cloudoperators/greenhouse:0.16.1" \
+  oci://ghcr.io/sofiyadesaisap/greenhouse-rbsc
+```
+
+After the RBSC is updated, the OCM controller on-cluster will reconcile the
+`ComponentVersion` CR and re-extract updated Snapshots automatically (on the next poll
+interval, or trigger immediately with `kubectl annotate componentversion greenhouse \
+reconcile.ocm.software/requestedAt="$(date +%s)" -n greenhouse`).
+
+---
+
 ## PART 1 — Air-Gap Transfer *(shown live in the demo)*
 
 > This is the sovereign cloud / air-gap story. One command moves the entire bundle — charts
@@ -400,8 +460,10 @@ cert-manager, OCM controller, and kro installs via HelmRelease.
 
 ### Step 4 — Create the greenhouse namespace and registry secret
 
-The bootstrap OCIRepositories pull cert-manager and OCM controller charts from the private
-RBSC — they need auth before kro can use them.
+The namespace must exist before OCM and bootstrap manifests can be applied. The registry
+secret is needed for **both the bootstrap** (cert-manager and OCM controller OCIRepositories
+pull from the private RBSC) and the **main deploy** (OCM controller pulls the bundle from RBSC),
+so create it now.
 
 ```bash
 kubectl create namespace greenhouse --dry-run=client -o yaml | kubectl apply -f -
@@ -452,18 +514,33 @@ kubectl apply -f deploy/bootstrap-instance.yaml
 **What kro expands this into:**
 
 ```
-OCIRepository/prometheus-crds-bootstrap  → oci://ghcr.io/prometheus-community/charts/... (public OCI — not in bundle)
-OCIRepository/cert-manager-bootstrap     → oci://ghcr.io/sofiyadesaisap/greenhouse-rbsc/cloudoperators/... (RBSC)
-OCIRepository/ocm-controller-bootstrap   → oci://ghcr.io/sofiyadesaisap/greenhouse-rbsc/open-component-model/... (RBSC)
+OCIRepository/prometheus-crds-bootstrap  → oci://ghcr.io/prometheus-community/charts/...   (public OCI — exception)
+OCIRepository/cert-manager-bootstrap     → oci://<rbscRegistry>/cloudoperators/greenhouse-extensions/charts/cert-manager
+OCIRepository/ocm-controller-bootstrap   → oci://<rbscRegistry>/open-component-model/helm/ocm-controller
 
 HelmRelease/prometheus-crds  → installs prometheus-operator CRDs   (monitoring ns)
 HelmRelease/cert-manager     → installs cert-manager               (cert-manager ns)  ← parallel with prometheus-crds
 HelmRelease/ocm-controller   → installs OCM controller             (ocm-system ns)    ← dependsOn: cert-manager
 ```
 
-prometheus-operator-crds is the one public OCI exception — it is not part of the OCM bundle
-(the greenhouse chart creates `PrometheusRule` resources unconditionally, so the CRD must
-exist or the greenhouse HelmRelease fails). cert-manager and OCM controller come from the RBSC.
+**Why cert-manager and OCM controller pull from the RBSC:** In `component-constructor.yaml`,
+these charts use `access.type: ociArtifact`. When `ocm transfer --copy-resources` runs, OCM
+applies its path-preservation rule: it strips the source registry host and copies the chart
+blob to the RBSC at the same path. So `ghcr.io/cloudoperators/greenhouse-extensions/charts/cert-manager`
+becomes `<rbscRegistry>/cloudoperators/greenhouse-extensions/charts/cert-manager` — the exact
+URL the bootstrap OCIRepository targets. Flux can consume this directly without the OCM
+controller as intermediary, which solves the chicken-and-egg problem.
+
+**Why prometheus-operator-crds is the one exception:** It is not part of the OCM bundle —
+greenhouse unconditionally creates `PrometheusRule` resources, but prometheus-crds was
+intentionally left as a cluster-level dependency rather than bundled. It always pulls from
+public OCI. This is documented explicitly and does not affect air-gap compliance for the
+core components.
+
+**Content integrity:** The OCM bundle signature (`ocm sign`) records content digests for cert-manager
+and the OCM controller chart in the signed component descriptor. `ocm verify` confirms those
+digests before the transfer runs, so the bootstrap charts are still covered by the supply-chain
+integrity boundary.
 
 **Watch the bootstrap unfold:**
 

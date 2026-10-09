@@ -29,8 +29,14 @@ components:
 
   # -------------------------------------------------------------------------
   # Prerequisite: cert-manager
-  # OCM fetches directly from the greenhouse-extensions OCI registry — no helm pull needed.
-  # Source: ghcr.io/cloudoperators/greenhouse-extensions/charts/cert-manager:${CERT_MANAGER_VERSION}
+  # Uses access.type: ociArtifact so that `ocm transfer --copy-resources` copies
+  # the chart blob to the RBSC at the original OCI path:
+  #   ghcr.io/cloudoperators/greenhouse-extensions/charts/cert-manager:${CERT_MANAGER_VERSION}
+  #   → <rbsc>/cloudoperators/greenhouse-extensions/charts/cert-manager:${CERT_MANAGER_VERSION}
+  # This makes the chart directly consumable by Flux OCIRepository at the RBSC path,
+  # enabling fully air-gapped bootstrap via the GreenhouseBootstrap RGD.
+  # (Previously used input.type: helm, which ingested the blob into OCM's internal layout
+  # and required the OCM controller to serve it via Snapshots before Flux could use it.)
   # -------------------------------------------------------------------------
   - name: github.com/cloudoperators/greenhouse/prerequisites/cert-manager
     version: ${CERT_MANAGER_VERSION}
@@ -43,11 +49,9 @@ components:
       - name: cert-manager-chart
         type: helmChart
         version: ${CERT_MANAGER_VERSION}
-        input:
-          type: helm
-          path: cert-manager
-          helmRepository: oci://ghcr.io/cloudoperators/greenhouse-extensions/charts
-          version: ${CERT_MANAGER_VERSION}
+        access:
+          type: ociArtifact
+          imageReference: ghcr.io/cloudoperators/greenhouse-extensions/charts/cert-manager:${CERT_MANAGER_VERSION}
 
   # -------------------------------------------------------------------------
   # Prerequisite: flux2 (official install manifests)
@@ -98,8 +102,11 @@ components:
 
   # -------------------------------------------------------------------------
   # Prerequisite: ocm-controller
-  # OCM fetches directly from ghcr.io OCI — no helm pull needed.
-  # OCI tag uses v-prefix (v0.33.0), hence "v${OCM_CONTROLLER_VERSION}".
+  # Uses access.type: ociArtifact for the same reason as cert-manager above —
+  # so --copy-resources copies the chart to the RBSC at the original OCI path:
+  #   ghcr.io/open-component-model/helm/ocm-controller:v${OCM_CONTROLLER_VERSION}
+  #   → <rbsc>/open-component-model/helm/ocm-controller:v${OCM_CONTROLLER_VERSION}
+  # Resource version uses no v-prefix; imageReference tag uses v-prefix (OCI convention).
   # -------------------------------------------------------------------------
   - name: github.com/cloudoperators/greenhouse/prerequisites/ocm-controller
     version: ${OCM_CONTROLLER_VERSION}
@@ -112,11 +119,9 @@ components:
       - name: ocm-controller-chart
         type: helmChart
         version: ${OCM_CONTROLLER_VERSION}
-        input:
-          type: helm
-          path: ocm-controller
-          helmRepository: oci://ghcr.io/open-component-model/helm
-          version: v${OCM_CONTROLLER_VERSION}
+        access:
+          type: ociArtifact
+          imageReference: ghcr.io/open-component-model/helm/ocm-controller:v${OCM_CONTROLLER_VERSION}
 
   # -------------------------------------------------------------------------
   # Greenhouse core (chart + image)

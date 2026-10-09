@@ -1,12 +1,19 @@
 # kro ResourceGraphDefinition for Greenhouse Bootstrap
 #
 # Installs cluster prerequisites (cert-manager, prometheus-operator CRDs, OCM controller)
-# via kro + Flux, pulling charts from the RBSC registry (air-gapped source).
-# prometheus-operator-crds is the one exception — not in the OCM bundle, pulls from
-# public OCI (ghcr.io/prometheus-community).
+# via kro + Flux, pulling charts from the on-site RBSC registry.
+#
+# After `ocm transfer --copy-resources --recursive`, the RBSC holds Helm chart blobs at
+# paths derived from OCM's path-preservation rule (source registry host is stripped):
+#   cert-manager:    oci://<rbsc>/cloudoperators/greenhouse-extensions/charts/cert-manager
+#   ocm-controller:  oci://<rbsc>/open-component-model/helm/ocm-controller
+#
+# prometheus-operator-crds is the one exception — it is NOT in the OCM bundle (greenhouse
+# unconditionally creates PrometheusRule resources, but prometheus-crds is not an OCM
+# component). It always pulls from public OCI. Document this clearly in the demo.
 #
 # Applied via kustomize (deploy/kustomization.yaml).
-# When kro processes this RGD it creates the GreenhouseBootstrap CRD.
+# When kro processes this RGD it registers the GreenhouseBootstrap CRD.
 # Apply the instance separately: kubectl apply -f deploy/bootstrap-instance.yaml
 #
 # Schema uses kro v0.9.x SimpleSchema syntax (inline type strings, not {type: string}).
@@ -21,12 +28,9 @@ spec:
     apiVersion: v1alpha1
     kind: GreenhouseBootstrap
     spec:
-      # RBSC registry prefix — charts land here after ocm transfer --copy-resources.
-      # OCM path-preservation strips the source registry host and keeps the path,
-      # so ghcr.io/cloudoperators/... becomes <rbscRegistry>/cloudoperators/...
+      # RBSC registry host, e.g. "ghcr.io/sofiyadesaisap/greenhouse-rbsc"
       rbscRegistry: "string"
-      # Name of the docker-registry Secret in the greenhouse namespace used to
-      # authenticate OCIRepository pulls from the private RBSC.
+      # Name of the docker-registry secret in the greenhouse namespace with RBSC credentials
       registrySecretName: "string"
       certManagerVersion: "string"
       # prometheus-operator-crds is NOT in the OCM bundle — pulls from public OCI.
@@ -40,7 +44,7 @@ spec:
   resources:
 
     # ── prometheus-operator CRDs ─────────────────────────────────────────────
-    # Not in the OCM bundle; pulled from public OCI as an exception.
+    # Not in the OCM bundle; pulled from public OCI.
     # Required because the greenhouse chart creates PrometheusRule resources
     # unconditionally — without this CRD the greenhouse HelmRelease fails.
     - id: prometheusOCIRepo
@@ -74,9 +78,11 @@ spec:
             namespace: greenhouse
 
     # ── cert-manager ─────────────────────────────────────────────────────────
-    # Pulled from RBSC. OCM path-preservation maps:
-    #   ghcr.io/cloudoperators/greenhouse-extensions/charts/cert-manager
-    #   → <rbscRegistry>/cloudoperators/greenhouse-extensions/charts/cert-manager
+    # Pulled from the RBSC. Path derived from component-constructor.yaml:
+    #   access.type: ociArtifact
+    #   imageReference: ghcr.io/cloudoperators/greenhouse-extensions/charts/cert-manager:${version}
+    # --copy-resources strips the source host and writes the blob to:
+    #   <rbscRegistry>/cloudoperators/greenhouse-extensions/charts/cert-manager
     - id: certManagerOCIRepo
       template:
         apiVersion: source.toolkit.fluxcd.io/v1
@@ -115,9 +121,11 @@ spec:
             installCRDs: true
 
     # ── OCM controller ────────────────────────────────────────────────────────
-    # Pulled from RBSC. OCM path-preservation maps:
-    #   ghcr.io/open-component-model/helm/ocm-controller
-    #   → <rbscRegistry>/open-component-model/helm/ocm-controller
+    # Pulled from the RBSC. Path derived from component-constructor.yaml:
+    #   access.type: ociArtifact
+    #   imageReference: ghcr.io/open-component-model/helm/ocm-controller:v${version}
+    # --copy-resources strips the source host and writes the blob to:
+    #   <rbscRegistry>/open-component-model/helm/ocm-controller
     # MUST depend on cert-manager — OCM controller uses cert-manager for webhook TLS.
     # MUST set tlsCert.generateTlsCert=true — without it the internal registry has no
     # TLS cert and all Flux OCIRepository pulls from registry.ocm-system... fail.
