@@ -13,11 +13,19 @@
 
 > "We have an OCM bundle in GHCR — that's the delivery artifact. It contains the Greenhouse
 > Helm chart, container images, and all prerequisites (cert-manager, OCM controller, kro).
+> The bundle is **signed keyless with Sigstore** — one signature over the component descriptor
+> that transitively covers every chart and image content digest, with no key pair to manage.
 > With one `ocm transfer` command we move the entire bundle — charts AND container image blobs —
-> to the on-site registry. The cluster has no network path to external registries. We then apply
-> a single CR — `GreenhouseStack` — and kro expands it into all deployment resources.
-> cert-manager, the OCM controller, and Greenhouse itself all pull from the local registry.
-> Zero runtime dependency on external infrastructure."
+> to the on-site registry; the signature travels inside the descriptor and is **verified at the
+> air-gap boundary before anything crosses**. The cluster has no network path to external
+> registries. We then apply a single CR — `GreenhouseStack` — and kro expands it into all
+> deployment resources. cert-manager, the OCM controller, and Greenhouse itself all pull from the
+> local registry. Zero runtime dependency on external infrastructure."
+
+> **Signing scope at a glance:** the OCM signature is the integrity gate for the *bundle*
+> (verified at the boundary and again in-cluster via `ComponentVersion READY=True`). It does
+> **not** reach pod admission — that is a separate, optional decision (see Part 6). Full
+> rationale and the open decisions: `keyless-signing-discussion.md`.
 
 ---
 
@@ -78,19 +86,35 @@ The CTF directory (`greenhouse-bundle.ctf/`) now contains the local OCI layout w
 ### Step 2b — Sign the Bundle (Keyless / Sigstore)
 
 **Why this step?** One keyless signature over the OCM component descriptor transitively covers
-**every** chart, image, and sub-component digest in the bundle. There is no key pair to create
-or store — `ocm sign --keyless` opens a browser, you log in to your OIDC provider, and Sigstore
-issues a ~10-minute certificate. The resulting signature (with its Fulcio cert and Rekor proof)
-is embedded in the descriptor and travels with the bundle through every `ocm transfer`.
-Full rationale: `keyless-signing.md`.
+**every** chart, image, and sub-component *content digest* in the bundle. There is no key pair to
+create or store — `ocm sign --keyless` opens a browser, you log in to your OIDC provider, and
+Sigstore issues a ~10-minute certificate. The resulting signature (Fulcio cert + Rekor proof,
+one self-contained bundle) is **embedded inside the component descriptor** and travels with the
+bundle through every `ocm transfer`. Full rationale and the architecture decisions behind this:
+`keyless-signing-discussion.md`.
 
-**`[LOCAL]`** — Sign the top-level component. A browser window opens for login.
+> **What the signature does and does not cover** (confirmed — see discussion brief §4a/§5):
+> - ✅ It binds the **content digest** of every chart and image (`resources[].digest`), so a
+>   swapped blob is detected at verify time. The local CTF already carries these digests (the
+>   greenhouse/dashboard `ociImage` digests resolve at build time), so signing here is correct.
+> - ✅ It is **transfer-safe** — the signed digest excludes storage location (`access`,
+>   `repositoryContexts`), so GHCR → RBSC does not invalidate it.
+> - ❌ It is **not** a cosign `.sig` on the images and **does not reach pod admission**. Kyverno
+>   `verifyImages` cannot see it. Admission enforcement is a separate, optional decision — see the
+>   new **Part 6 (optional)** below and discussion brief §6.
+
+**`[LOCAL]`** — Sign the top-level component recursively. A browser window opens for login.
 ```bash
 make -f Makefile.ocm sign-sigstore
 ```
 
 > Override the signing identity to match your provider, e.g.
 > `make -f Makefile.ocm sign-sigstore SIG_OIDC_ISSUER=https://github.com/login/oauth`.
+> The identity you log in with (your email + provider) is what you pin at verify time.
+
+> **Not yet proven:** the interactive `--keyless` round-trip (browser sign + offline verify) has
+> not been run end-to-end in this environment. **Validate it once before relying on the demo.**
+> (Discussion brief, risk #1.)
 
 ---
 
@@ -456,6 +480,84 @@ kubectl get greenhousestack -n greenhouse
 
 ---
 
+## PART 6 — Pod-Admission Enforcement: OCM Digest Allowlist (Option 1)
+
+> **How this relates to the OCM signature.** The signature from Step 2b is verified upstream — at
+> the air-gap boundary (Part 1) and in-cluster by the OCM controller (`ComponentVersion
+> READY=True`). It lives **inside the component descriptor** and is **gone by the time a Pod is
+> admitted** — it never travels on the image. So **Kyverno `verifyImages` cannot verify the OCM
+> signature** (reasoning: `keyless-signing-discussion.md` §4a). Instead, this Part enforces the
+> *outcome* of that verification: **a Pod may only run an image whose content digest is one the
+> OCM signature covered.** No signature is re-checked at admission; no sigstore infra on the
+> pod-creation path. (This is the chosen approach; Options 2 and 3 are summarized at the end.)
+
+This has three moving parts, already wired into the repo:
+1. **Pods run by digest** — `deploy/kro-rgd.yaml` sets `image.digest` for
+   manager/idproxy/cors-proxy/authz/dashboard, so each renders `repository@sha256:…`.
+2. **Allowlist = the signed digests** — `make gen-image-allowlist` extracts them from the signed
+   bundle into a ConfigMap.
+3. **Kyverno validates** — a plain `validate` rule (NOT `verifyImages`) denies any pod image whose
+   digest is not in the allowlist. postgres (sapcc, tag-pinned, not OCM-signed) is exempted.
+
+### Step 6.1 — Pin the pod image digests *(done at Part 4 time, listed here for the full picture)*
+
+**`[LOCAL]`** — Read the signed image digests from the bundle and put them in `deploy/instance.yaml`.
+```bash
+make -f Makefile.ocm print-image-digests
+```
+Set `greenhouseImageDigest` (shared by manager/idproxy/cors-proxy/authz) and `dashboardImageDigest`
+in `deploy/instance.yaml` from the output. These flow through `kro-rgd.yaml` into each subchart's
+`image.digest`, so every greenhouse pod runs `…@sha256:…`.
+
+> **Verify once:** OCM's recorded digest should equal the registry manifest digest the kubelet
+> pulls. Confirm with `crane digest <rbsc-image>:<tag>` (or `cosign triangulate`) and compare to
+> `print-image-digests`. For multi-arch images confirm the index digest matches. (Risk to validate
+> before Enforce mode.)
+
+### Step 6.2 — Generate the allowlist from the signed bundle
+
+**`[LOCAL]`** — Generate the ConfigMap from the verified bundle. Point `ALLOWLIST_SRC` at the RBSC
+bundle after transfer, or use the local CTF default pre-demo.
+```bash
+make -f Makefile.ocm gen-image-allowlist \
+  ALLOWLIST_SRC='oci://ghcr.io/sofiyadesaisap/greenhouse-rbsc//github.com/cloudoperators/greenhouse:0.16.1'
+```
+This writes `prereqs/image-digest-allowlist.yaml` (ConfigMap `ocm-signed-image-digests`). Only
+`ociImage` resources are included — that is what pods actually run.
+
+### Step 6.3 — Install Kyverno and apply the policy (Audit first)
+
+**`[CLUSTER]`** — Installs Kyverno, applies the allowlist ConfigMap, then the policy. The policy
+ships in **Audit** mode so you can observe before blocking.
+```bash
+make -f Makefile.ocm install-kyverno
+```
+
+**`[CLUSTER]`** — Observe what Audit would block before enforcing.
+```bash
+kubectl get policyreport -A | grep ocm-digest-allowlist || true
+kubectl describe clusterpolicy ocm-digest-allowlist
+```
+
+**`[CLUSTER]`** — When clean, flip to Enforce: set `validationFailureAction: Enforce` in
+`prereqs/kyverno-digest-allowlist.yaml` and re-apply.
+```bash
+kubectl apply -f prereqs/kyverno-digest-allowlist.yaml
+```
+
+> **On every version bump** (see Upgrade Flow step 9): re-run `make gen-image-allowlist` and
+> re-apply the ConfigMap, or new legitimate image digests will be denied.
+
+### Not chosen (for reference)
+
+- **Option 2 — per-image cosign + Kyverno `verifyImages`:** true image signatures Kyverno verifies
+  natively, but **blocked** — our images are upstream `ghcr.io/cloudoperators/...` which we cannot
+  sign without re-hosting; also needs mirrored sigstore roots in-cluster. (Brief §6 Option 2.)
+- **Option 3 — registry/provenance only:** require images from the RBSC registry + digest-pinned,
+  no allowlist. Simpler, not tied to the signed set. (Brief §6 Option 3.)
+
+---
+
 ## Quick Troubleshooting Reference
 
 | Symptom | Where to look | Fix |
@@ -469,6 +571,12 @@ kubectl get greenhousestack -n greenhouse
 | `ImagePullBackOff` on greenhouse pods | `kubectl describe pod -n greenhouse` | Verify `imageRegistry` in `instance.yaml` matches actual RBSC path; re-run `make create-registry-secret` |
 | Snapshot paths in `instance.yaml` mismatch | `make snapshot-urls` | Re-run `make snapshot-urls`, update `instance.yaml`, re-apply `make deploy-instance` |
 | OCM controller pods `ContainerCreating`: `ocm-registry-tls-certs` not found | OCM controller pod events | `tlsCert.generateTlsCert=true` was not set — reinstall: `make install-ocm-controller` |
+| `ocm sign` fails: no browser / cannot open OIDC login | terminal output of `make sign-sigstore` | Run on a workstation with a browser; or configure a device-flow / headless OIDC token. Keyless requires an interactive login (brief §2) |
+| `ocm verify` fails: `signature verification failed` / identity mismatch | `make verify-sigstore` output | The signer identity (your email/provider) must match what the verifier expects; confirm you signed with the same OIDC identity |
+| `ocm verify --local` fails offline: trust root missing | verify output in air-gapped env | The Fulcio/Rekor trusted-root file must be distributed into the environment once, out of band (brief §3) |
+| Kyverno `ocm-digest-allowlist` denies a greenhouse pod | `kubectl describe clusterpolicy ocm-digest-allowlist`; policyreports | Pod image digest not in allowlist. Re-run `make gen-image-allowlist` from the current signed bundle + re-apply the ConfigMap; confirm `instance.yaml` digests match `print-image-digests` |
+| Kyverno denies ALL pods incl. postgres | policyreport messages | Allowlist ConfigMap empty/missing, or postgres not matching the `/sapcc/` exemption. Check `kubectl get cm ocm-signed-image-digests -n kyverno` and the image path |
+| Pod still runs by `:tag` not `@sha256` | `kubectl get pod -o jsonpath=...image` | `image.digest` not set — confirm `greenhouseImageDigest`/`dashboardImageDigest` in `instance.yaml` and that kro re-expanded the GreenhouseStack |
 
 ---
 
@@ -478,8 +586,10 @@ When a new Greenhouse version is released:
 
 1. Update `GREENHOUSE_VERSION` and `GREENHOUSE_IMAGE_REF` in `Makefile.ocm`
 2. Update `DASHBOARD_IMAGE_REF` if the dashboard image changed
-3. Re-run Part 0 (build + push to central GHCR)
-4. Re-run Part 1 (transfer to RBSC)
+3. Re-run Part 0 (build), then **re-sign** the new bundle (Step 2b — a new version needs a fresh
+   signature; the old signature covers only the old digests), then push to central GHCR
+4. Re-run Part 1 — **re-verify the signature** (`make verify-sigstore`) before transfer, then
+   transfer to RBSC
 5. Force OCM to re-pull:
    ```bash
    make -f Makefile.ocm deploy-reconcile-ocm
@@ -493,3 +603,6 @@ When a new Greenhouse version is released:
    ```bash
    make -f Makefile.ocm deploy-instance
    ```
+9. **If Part 6 Option 1 (digest allowlist) is in use:** regenerate the allowlist from the new
+   bundle and re-apply the admission policy — otherwise the new (legitimate) image digests are
+   blocked. (Discussion brief, risk #7.)

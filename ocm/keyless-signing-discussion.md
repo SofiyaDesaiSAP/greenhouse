@@ -9,7 +9,15 @@
 > **Status:** proposal / for discussion. Companion files already drafted in the repo are listed
 > at the end under "Artifacts already drafted."
 >
-> **Date of investigation:** 2026-10-07. **Verified against:** OCM CLI v0.48.0.
+> **Date of investigation:** 2026-10-07, revised 2026-10-08. **Verified against:** OCM CLI v0.48.0.
+>
+> **Revision note (2026-10-08):** This brief has been reconciled with a second, deeper
+> investigation (`ocm-kyverno-signing-discussion.md`) that examined exactly *where* the OCM
+> signature lives and whether Kyverno can verify it at admission. That analysis **corrects a
+> material error** in the first draft: Kyverno `verifyImages` **cannot** verify the OCM-embedded
+> signature — the two operate on different objects. See the new **§4a, §6, and §8**, and the
+> correction notice on the drafted Kyverno artifact in the final table. Read §4a before anything
+> else; it changes what "Domain B" can actually be.
 
 ---
 
@@ -39,6 +47,22 @@ objects. The headline promise is **"zero runtime dependency on external infrastr
 whole design (see §7). The `.github/workflows/push-ocm-bundle.yaml` in the repo exists but is
 **not** the path in use for this work, and we reverted an earlier attempt to wire signing into
 it.
+
+### Headline conclusion (read this first)
+
+1. **Signing the OCM component (`ocm sign --keyless`) is the right, sufficient integrity gate.**
+   One signature transitively covers every chart and image *content digest*; verify it once at the
+   air-gap boundary (`ocm verify`) and the whole bundle is attested. This part is solid and worth
+   implementing.
+2. **The OCM signature does NOT reach pod admission.** It lives embedded in the component
+   descriptor, is consumed by the OCM controller upstream, and **never travels on the image**.
+   Therefore **Kyverno `verifyImages` cannot verify it** (§4a, §6). This corrects the first draft.
+3. **Pod-admission enforcement is a separate, explicit decision** with three real options —
+   digest allowlist (Option 1, best air-gap fit), per-image cosign + Kyverno (Option 2, blocked by
+   image ownership), or registry-only (Option 3). It is **not** a free byproduct of OCM signing.
+   This is the main thing to decide with the architect (§6, decision C).
+4. **The drafted `kyverno-verify-images.yaml` is misleading and must not ship as-is** — it implies
+   it verifies the OCM signature; it does not. Repurpose to Option 1 or delete (risk #2).
 
 ---
 
@@ -126,10 +150,11 @@ mirroring the trusted root.
 
 ---
 
-## 4. The central architectural insight — verification splits into TWO domains
+## 4. The architecture splits in two — and only one half is straightforward
 
-This is the most important finding and it is **specific to the OCM-controller + Flux topology**
-(it is not in any of the public docs). The runtime data flow forks:
+This is a key topology finding (not in the public docs): the runtime data flow forks into the
+**bundle** path (where the OCM signature works cleanly) and the **pod** path (where it does
+**not** reach — see §4a). The fork:
 
 ```
                         ┌──────────────── DOMAIN A: the bundle ─────────────────┐
@@ -154,8 +179,9 @@ This is the most important finding and it is **specific to the OCM-controller + 
   verify` at the transfer boundary. **This is the primary gate.**
 
 - **Domain B — the running pods.** Container **images** are pulled by the kubelet *directly* from
-  RBSC and are **not** repackaged, so cosign image signatures survive to runtime and can be
-  enforced at pod admission by **Kyverno `verifyImages`**.
+  RBSC and are **not** repackaged. **BUT** — and this is the correction below — the OCM signature
+  does **not** travel on the image, so a pod-admission controller has nothing to check *unless we
+  separately sign each image with cosign*. See **§4a**.
 
 ### Why Flux `spec.verify` cannot be the gate (common misconception)
 
@@ -168,9 +194,54 @@ Flux layer.** If we ever change the design so Flux pulls charts *directly* from 
 indirection), *then* `spec.verify` becomes the right tool — we've left a commented marker in
 `kro-rgd.yaml` showing exactly where it would go.
 
-> **Takeaway for the architect:** For *this* topology, the OCM component signature (Domain A) is
-> both necessary and nearly sufficient. Kyverno image verification (Domain B) is optional
-> defense-in-depth, and is currently blocked by image ownership (§6).
+---
+
+## 4a. CORRECTION — the OCM signature and pod admission do NOT connect out of the box
+
+> This section supersedes the optimistic reading of "Domain B" in the first draft. It is the
+> single most important correction from the second investigation.
+
+**Where the OCM signature actually lives.** It is an **embedded field** inside the component
+descriptor — a `signatures:` array *within* the descriptor blob — **not** a separate OCI layer,
+and **not** a cosign-style `.sig` referrer artifact. (Media type of the embedded sigstore bundle:
+`application/vnd.ocm.signature.sigstore.bundle+protobuf.v0.3+json`.) OCM does it this way on
+purpose: the signature then survives every `ocm transfer` automatically, and verification is a
+single fetch. The price is that it is **invisible to anything that speaks the cosign/referrer
+model.**
+
+**What OCM signs is not an OCI manifest digest.** `ocm sign` hashes a *normalised* form of the
+descriptor (`jsonNormalisation`) that **includes** `resources[].digest` and
+`componentReferences[].digest` but **excludes** `access` and `repositoryContexts`. (That
+exclusion is exactly why transfer across the air gap keeps the signature valid — only *content*
+is signed, not *location*.) Cosign, by contrast, verifies over the **raw OCI manifest digest**.
+Different bytes, different hash.
+
+**The consequence — the trust gap:**
+
+```
+OCM signature verified HERE                          Admission runs HERE
+         │                                                   │
+ComponentVersion ──► Resource ──► Flux HelmRelease ──► Pod (image@sha256:…)
+  (sig checked by OCM controller)                     (NO signature on the image)
+```
+
+At pod-admission time, the admission controller sees only `spec.containers[].image`. The OCM
+signature is **gone** — it lived in the descriptor, was consumed by the OCM controller four steps
+upstream, and never travels with the image. The image carries no cosign referrer (OCM creates
+none). **So Kyverno `verifyImages` has nothing cryptographic to inspect on the image.**
+
+**Why Kyverno `verifyImages` cannot verify the OCM signature (two-layer mismatch):**
+1. **Wrong location** — Kyverno looks for a cosign *referrer* (`sha256-….sig` / OCI 1.1 referrer
+   with a `subject`). The OCM signature is an embedded YAML field; Kyverno has no code path to
+   fetch an OCM descriptor, parse it, and read `signatures[].signature.value`.
+2. **Wrong thing signed** — even pointed at the descriptor's own OCI manifest, Kyverno would hash
+   the raw manifest, not OCM's normalised descriptor hash. It would be verifying the wrong bytes.
+
+> **Takeaway for the architect (revised):** For *this* topology the OCM component signature
+> (Domain A) is the real, sufficient integrity gate, verified at the transfer boundary. **Pod-
+> admission image verification is a SEPARATE, non-trivial decision** — it is *not* a free
+> byproduct of the OCM signature, and the Kyverno policy drafted earlier does not do what its
+> name implies. The options are in §6.
 
 ---
 
@@ -183,10 +254,26 @@ What the installed `ocm` binary actually supports (not just docs):
 - **Keyless flag:** `--keyless` (on both `sign` and `verify`).
 - **Offline verify:** `--local` / `-L` ("verification based on information found in component
   versions, only") — the air-gapped path, using the embedded bundle.
-- **Transitive signing:** `--recursive` optionally signs each sub-component individually; not
-  required because the root signature already covers them via embedded digests.
+- **Transitive signing:** `--recursive` signs each sub-component individually AND the root
+  signature already covers them via embedded digests. The second investigation used `--recursive`
+  explicitly; recommended so each sub-component is independently verifiable.
 - Also present: `--tsa` / `--tsa-url` (RFC-3161 timestamp authority), `--issuer`, `--signature`
   (signature *name* — a component may hold several, e.g. build-sig + release-sig).
+
+**What the signature covers (confirmed facts):**
+- `resources[].digest` (image/chart **content** hash via `genericBlobDigest/v1`, SHA-256) → the
+  image and chart *content* is bound to the signature. Swapping an image blob (same tag, different
+  content) is **detected** — re-pulled content hashes differently and verification fails.
+- `componentReferences[].digest` under `--recursive` → verifying the umbrella transitively
+  guarantees all sub-components and their images/charts.
+- **Excluded:** `access`, `repositoryContexts` (storage location) → transfer-safe.
+- **Sequencing requirement:** digests must be **precomputed before signing**. `--copy-resources`
+  ensures real blobs exist so digests resolve; *then* sign. `ComponentVersion READY=True` in the
+  cluster asserts the OCM controller re-normalised the descriptor, recomputed every resource
+  digest from registry content, and confirmed it matches the signed digest.
+- **Scope caveat:** the guarantee is integrity *from sign-time onward* + across transfers. If an
+  image were malicious *before* signing, the signature faithfully vouches for the bad content. It
+  is **not** a provenance or malware check of the original source.
 
 **Proposed commands (what we'd run):**
 
@@ -216,21 +303,69 @@ ocm verify componentversions \
 
 ---
 
-## 6. Container image signing — real constraint
+## 6. Pod-admission enforcement — the real options (THIS is the decision)
 
-Images in the bundle are `ghcr.io/cloudoperators/greenhouse` and `…/juno-app-greenhouse` — the
-**upstream** cloudoperators repositories, which **we cannot push cosign signatures to.** So:
+Given §4a (OCM signature ≠ anything an admission controller can read on an image), there are
+**three** distinct ways to enforce something at pod admission. They are not variations of one
+idea — they defend different things at different cost.
 
-- **Today:** image-signature enforcement via Kyverno is **not actionable** for these images. But
-  it mostly doesn't matter, because the **OCM signature already covers the image digests**, so a
-  swapped/tampered image fails `ocm verify` at the boundary anyway.
-- **To make Domain B real:** we would need to **re-host** the greenhouse/dashboard images under a
-  registry we control (plausibly as part of, or right after, the transfer to RBSC), sign *those*
-  copies with cosign keyless, and point Kyverno at them.
+### Case A vs Case B — do not conflate the two "sigstore" signatures
 
-> **Architect decision point C:** *Do we want pod-admission image verification at all, and if so,
-> are we willing to re-host (and sign) the upstream images under our own registry?* If "no," we
-> rely solely on Domain A and skip Kyverno. If "yes," we add a re-host+sign step to the transfer.
+| | What was signed | Where it lives | Can Kyverno `verifyImages` check it? |
+|---|---|---|---|
+| **Case A** | each **image**, via `cosign sign --keyless` | cosign `.sig` **referrer** on the image | **Yes, natively** (keyless attestor, pin issuer+subject) |
+| **Case B** | the **OCM component**, via `ocm sign --algorithm sigstore --keyless` | embedded field in the **descriptor** | **No** — needs a custom verifier (§8) |
+
+Our current demo does **Case B only**. Kyverno cannot see that signature. To get native Kyverno
+image verification we would additionally need Case A — i.e. separately cosign-sign each image.
+
+### Option 1 — OCM digest allowlist (bridges OCM → admission, NO cosign, NO sigstore infra at admission) ✅ CHOSEN & IMPLEMENTED
+
+Extract the signed, already-verified image digests from the descriptor
+(`ocm get resources --recursive -o json`), load them into a policy that **rejects any pod whose
+image digest is not in that allowlist** (and requires digest-pinned images). OCM verified the
+signature once at the boundary; admission enforces the *outcome* — "only images that came through
+a verified OCM bundle may run." No per-image signing, no sigstore trust roots on the pod-creation
+path. This is the lightest, most robust, most air-gap-friendly option.
+
+**Implemented as (2026-10-08):**
+- **Pods run by digest** — `deploy/kro-rgd.yaml` sets `image.digest` for
+  manager/idproxy/cors-proxy/authz/dashboard (the four binary subcharts share one image → one
+  digest). New RGD schema fields `greenhouseImageDigest` / `dashboardImageDigest`, filled in
+  `deploy/instance.yaml`. Each subchart's `_helpers.tpl` renders `repository@digest` when set.
+- **Allowlist from the signed bundle** — `make gen-image-allowlist` runs
+  `ocm get resources ... -o json | jq (select type==ociImage)` and emits ConfigMap
+  `ocm-signed-image-digests` (ns kyverno). `make print-image-digests` shows the values for
+  `instance.yaml`.
+- **Kyverno `validate` policy** — `prereqs/kyverno-digest-allowlist.yaml` (a `validate` foreach,
+  NOT `verifyImages`): deny if an image is not `@sha256`-pinned or its digest ∉ allowlist. Ships
+  in **Audit**; flip to Enforce when clean. `make install-kyverno` installs Kyverno + ConfigMap +
+  policy.
+- **postgres exception** — the sapcc postgres image is tag-pinned, has no digest knob, and is NOT
+  an OCM resource. The policy exempts images whose path contains `/sapcc/`. It is not covered by
+  the OCM signature.
+
+### Option 2 — per-image cosign (Case A) + Kyverno `verifyImages`
+
+Separately `cosign sign` each image and verify cryptographically at admission. True image-level
+attestation, but it is a **parallel trust chain to OCM**, it is **blocked by image ownership**
+(our images are upstream `ghcr.io/cloudoperators/...`, which we cannot push signatures to — we'd
+have to **re-host** them under a registry we control and sign those copies), and keyless + air-gap
+means the verifier still needs mirrored sigstore trust roots.
+
+### Option 3 — registry/provenance only (no signatures at admission)
+
+Policy simply requires images from the expected RBSC registry + digest-pinned. Simplest, not
+cryptographic. A reasonable baseline if Option 1 is more than the demo needs.
+
+> **Architect decision point C (revised):** *What are we defending against at admission that the
+> OCM controller's verification doesn't already cover?*
+> - "A pod shouldn't run an image that didn't come through a verified OCM bundle" → **Option 1**
+>   (digest-membership check). You do **not** need to re-verify a signature at admission.
+> - "Re-verify the sigstore signature cryptographically at admission, independent of the OCM
+>   controller" → **Option 2 (Case A)** or a **custom OCM-aware verifier (§8)**. Heavier.
+> - "Just keep rogue registries out" → **Option 3**.
+> See §10 — this is the question to settle before writing any more policy YAML.
 
 ---
 
@@ -250,18 +385,61 @@ operated. Corrections made:
 The workflow file was **reverted** to its original state. All signing lives in `make` targets
 and in `demo-script.md` where the operator actually works.
 
+> Note: if we ever choose **Option 2/Case A** image signing *and* pin a pipeline identity, the
+> verifier subject would become a workflow URL again. For the hand-run demo it stays the signer's
+> email + provider.
+
 ---
 
-## 8. Gatekeeper vs Kyverno
+## 8. If we insist on re-verifying the OCM signature at admission (Case B) — the custom-verifier route
+
+This is included for completeness; it is the **heaviest** option and almost certainly *not* what
+the demo needs. Kyverno cannot verify the OCM signature itself, so the pattern is: Kyverno calls
+out (via `context.apiCall`) to a service that **does** understand OCM and answers yes/no.
+
+```
+Pod admission (image: registry/.../greenhouse@sha256:abc)
+   │
+   ▼  Kyverno policy — context.apiCall POST /verify
+OCM verifier service  ◄── verifies the descriptor's embedded sigstore signature
+   │                       (re-normalise, recompute digest, verify Fulcio+Rekor, CHECK identity)
+   ▼  { "verified": true, "component": "...", "matchedDigest": "sha256:abc" }
+Kyverno deny rule:  verified != true  → block
+```
+
+**Hard realities of this route (from the second investigation):**
+- **There is NO off-the-shelf `ocm-verifier` service.** Any `service.url` in such a policy points
+  at a component **we must build, deploy, give sigstore trust roots to, and keep highly
+  available.** (An earlier draft elsewhere used a fake URL — it was invented, not real.)
+- The verifier must: resolve image→digest, find the OCM descriptor whose `resources[].digest`
+  matches, re-normalise + recompute + compare, verify the sigstore bundle (Fulcio chain + Rekor
+  inclusion), **and crucially check the signer identity == expected issuer/subject** (otherwise
+  *any* valid sigstore identity passes — near-worthless). Simplest correct impl: shell out to
+  `ocm verify componentversions ...` plus an identity check, or link the OCM Go bindings.
+- **Air-gap tax doesn't go away** — it moves into *your* service, which still needs mirrored
+  Fulcio/Rekor trust roots to complete keyless verification offline.
+- **It duplicates the OCM controller's work** — `ComponentVersion READY=True` already means OCM
+  verified this signature once; re-verifying at admission drags sigstore infra onto the
+  pod-creation critical path.
+- **Fail-closed risk** — `failurePolicy: Fail` means every pod creation depends on the verifier
+  being up. Must be HA and must exclude its own namespace, or it can wedge the cluster.
+
+A full draft `ClusterPolicy` (apiCall skeleton) and the verifier endpoint contract are in
+`ocm-kyverno-signing-discussion.md` §8 if we ever go this way.
+
+---
+
+## 8b. Gatekeeper vs Kyverno (for Option 2 / Case A only)
 
 - **Kyverno** verifies cosign signatures **natively** (`verifyImages` with `attestors → keyless →
-  {subject, issuer}`). Simpler, and the recommended choice for this stack.
+  {subject, issuer}`). Simpler, and the recommended choice *if* we do Case A image verification.
 - **OPA / Gatekeeper** has **no native cosign verifier.** Using it means running the **Ratify**
-  external-data provider as the actual verifier, with Gatekeeper only calling out to it
-  (`ExternalData` → Ratify → cosign). More moving parts.
+  external-data provider as the actual verifier (`ExternalData` → Ratify → cosign). More moving
+  parts.
 
-**Recommendation:** Kyverno, *if* we do pod-admission verification at all (see decision C). A
-Gatekeeper+Ratify variant can be produced if there's an org mandate for Gatekeeper.
+Note: this comparison only matters for **Option 2 (Case A)**. For **Option 1** (digest allowlist),
+*either* engine works and no cosign verifier is involved at all — it's a plain
+digest-membership/validate rule.
 
 ---
 
@@ -270,48 +448,64 @@ Gatekeeper+Ratify variant can be produced if there's an org mandate for Gatekeep
 | # | Decision | Options | Our lean |
 |---|---|---|---|
 | **A** | Signing identity | Named person / shared service identity / group; and which OIDC provider | A dedicated signing identity (not a personal account) for longevity; provider per org standard |
-| **B** | Where to verify | Transfer boundary only / also in-cluster (OCM controller + Kyverno) | Boundary is the strong, low-cost gate; add in-cluster later if required |
-| **C** | Pod-admission image verification | Skip (rely on OCM sig) / re-host+sign images + Kyverno | Start without it; OCM signature already covers image digests |
-| **D** | Trusted-root distribution | Only needed if B includes in-cluster | Defer until B is decided |
-| **E** | Timestamping | Use `--tsa` for long-term signature validity beyond cert lifetime? | Consider for release artifacts; optional for the demo |
-| **F** | Signature policy | Single release signature / multi-party (build + release) approval | Single to start; OCM supports multiple names later |
+| **B** | Where to verify the OCM signature | Transfer boundary only / also in-cluster (OCM controller) | Boundary is the strong, low-cost gate; add in-cluster later if required |
+| **C** | **Pod-admission enforcement** | **Option 1** digest allowlist / **Option 2** per-image cosign (Case A) / **Option 3** registry-only / **none** | ✅ **DECIDED: Option 1** — implemented (digest pinning in kro-rgd + generated allowlist + Kyverno validate policy, Audit mode) |
+| **D** | Trusted-root distribution | Needed only if in-cluster OCM re-verify (B) OR Option 2/§8 verifier | Defer until B and C are decided |
+| **E** | Timestamping | Use `--tsa` for validity beyond the ~10-min cert lifetime? | Consider for release artifacts; optional for the demo |
+| **F** | Signature policy | Single release signature / multi-party (build + release) | Single to start; OCM supports multiple names later |
+| **G** | Re-host upstream images? | Only required for Option 2/Case A | Only if C = Option 2 |
 
 ---
 
 ## 10. Proposed end-to-end flow (if approved)
 
+Assuming **decision C = Option 1 (digest allowlist)**, the simplest coherent story:
+
 ```
 [LAPTOP — online]
   make build            # ocm add componentversions → greenhouse-bundle.ctf
-  make sign-sigstore    # ocm sign cv --keyless -S sigstore-v2   (browser login)
-  make push             # ocm transfer ctf → central GHCR        (signature preserved)
+  make sign-sigstore    # ocm sign cv --keyless -S sigstore-v2 --recursive  (browser login)
+  make push             # ocm transfer ctf → central GHCR         (signature preserved)
 
 [LAPTOP / transfer host — the air-gap boundary, online]
   make verify-sigstore  # ocm verify cv --keyless  ← THE GATE. fail = stop, do not cross.
   (then the Part 1 `ocm transfer` to RBSC)
+  # Option 1: extract verified digests → generate the admission allowlist here
+  #   ocm get resources --recursive -o json  →  list of signed image digests
 
 [CLUSTER — air-gapped]
-  (optional) make load-sigstore-root   # mount trusted root for in-cluster verify
-  (optional) make install-kyverno      # enforce image sigs — ONLY for images we own/re-host
   OCM controller pulls bundle → Snapshots → Flux installs charts (integrity attested at verify)
+  (Option 1) admission policy: reject any pod whose image digest ∉ allowlist, require @sha256 pins
 ```
+
+What this story does **not** include, by design: no cosign per-image signing, no sigstore trust
+roots in the cluster, no custom verifier service. If decision C lands on Option 2 or §8 instead,
+the flow gains the re-host+cosign-sign step and/or the verifier service and its trust-root
+mirroring.
 
 ---
 
 ## 11. Risks / things explicitly NOT yet proven
 
 1. **Interactive `--keyless` round-trip not executed** — flag shapes are binary-verified against
-   v0.48.0, but the live browser-login sign + offline verify has not been run. **Prove this
-   first.** (§5)
-2. **Image signing blocked by upstream ownership** — Domain B is inert until images are re-hosted
-   under a registry we control. (§6)
-3. **In-cluster offline verification needs a maintained trusted root** — a mirrored Sigstore root
-   is an operational artifact that must be refreshed/managed if we go that route. (§3, decision B)
-4. **`ocm transfer` + image referrers** — if we later enforce image signatures, confirm the
-   cosign signature *referrers* survive `ocm transfer --copy-resources` (may need an explicit
-   re-attach step at RBSC).
-5. **`sigstore` vs `sigstore-v2`** — v0.48.0 offers both; we should confirm which the OCM
-   controller version in-cluster can verify, if we do in-cluster verification.
+   v0.48.0, but the live browser-login sign + offline (`--local`) verify has not been run.
+   **Prove this first.** (§5)
+2. **The drafted Kyverno policy does not do what its name implies** — `prereqs/kyverno-verify-images.yaml`
+   was written on the (incorrect) assumption that Kyverno can verify the signature. Per §4a/§6 it
+   can only verify **Case A** (per-image cosign) signatures, which we do not currently produce.
+   **Do not ship it as-is.** It must either be repurposed to Option 1 (digest allowlist — not a
+   `verifyImages` rule at all) or deleted. (§6)
+3. **Image signing blocked by upstream ownership** — Option 2/Case A is inert until images are
+   re-hosted under a registry we control. (§6)
+4. **In-cluster / verifier offline verification needs a maintained trusted root** — a mirrored
+   Sigstore root is an operational artifact to refresh/manage if B includes in-cluster re-verify
+   or if we build the §8 verifier. (§3, §8)
+5. **`ocm transfer` + image referrers** — only relevant to Option 2: confirm cosign `.sig`
+   referrers survive `ocm transfer --copy-resources` (may need an explicit re-attach at RBSC).
+6. **`sigstore` vs `sigstore-v2`** — v0.48.0 offers both; confirm which the in-cluster OCM
+   controller version can verify, if we do in-cluster re-verification.
+7. **Option 1 allowlist freshness** — the digest allowlist must be regenerated on every bundle
+   version bump, or new legitimate images get blocked. Needs an owner/automation step.
 
 ---
 
@@ -319,12 +513,26 @@ Gatekeeper+Ratify variant can be produced if there's an org mandate for Gatekeep
 
 | File | What it is | State |
 |---|---|---|
-| `ocm/keyless-signing.md` | Full design/reference doc (laptop flow, two domains, offline model) | New, drafted |
-| `ocm/Makefile.ocm` | Added targets: `sign-sigstore`, `verify-sigstore`, `sign-images`, `transfer-rbsc`, `install-kyverno`, `load-sigstore-root` + vars/help | Modified |
-| `ocm/demo-script.md` | Added Step 2b (sign) and a verify gate in Part 1 | New in diff |
-| `ocm/prereqs/kyverno-verify-images.yaml` | Keyless `verifyImages` ClusterPolicy (Audit mode), laptop identity | New, drafted |
-| `ocm/deploy/kro-rgd.yaml` | Comment documenting why `spec.verify` is omitted + where it'd go | Modified |
-| `.github/workflows/push-ocm-bundle.yaml` | **Reverted** to original — signing is NOT wired into CI | Unchanged |
+| `ocm/keyless-signing-discussion.md` | **This brief** — the authoritative design doc | current |
+| `ocm/demo-script.md` | Step 2b (sign), Part 1 verify gate, **Part 6 (Option 1 admission)** — all current | updated — keep |
+| `ocm/Makefile.ocm` | `sign-sigstore`, `verify-sigstore`; **`print-image-digests`, `gen-image-allowlist`, `install-kyverno`** (Option 1); `sign-images`/`load-sigstore-root` (only if Option 2 later) | updated |
+| `ocm/deploy/kro-rgd.yaml` | **Digest pinning** (`image.digest` for all greenhouse subcharts) + new schema fields; `spec.verify` omission comment | updated |
+| `ocm/deploy/instance.yaml` | `greenhouseImageDigest` / `dashboardImageDigest` values | updated |
+| `ocm/prereqs/kyverno-digest-allowlist.yaml` | **Option 1 Kyverno `validate` policy** — digest-membership + registry, postgres exempt, Audit mode. (Replaces the deleted misleading `verifyImages` file.) | New |
+| `ocm/prereqs/image-digest-allowlist.yaml` | Generated ConfigMap of signed digests | **generated** by `make gen-image-allowlist` (not committed; produced from a fresh signed build) |
+| `ocm/keyless-signing.md` | Earlier reference doc. **⚠ superseded by this brief**; still contains the pre-correction "Domain B" framing. | **revise or drop** |
+| `.github/workflows/push-ocm-bundle.yaml` | **Reverted** — signing is NOT wired into CI (hand-run) | Unchanged |
 
-> Nothing has been committed. The `make` targets parse and expand to the correct, binary-verified
-> flags, but the interactive signing round-trip (risk #1) remains to be validated.
+> **Deleted:** `ocm/prereqs/kyverno-verify-images.yaml` — the misleading `verifyImages` policy that
+> implied it verified the OCM signature. Replaced by the Option 1 `validate` policy above.
+
+### Source documents this brief reconciles
+- `ocm-kyverno-signing-discussion.md` (repo root) — the deeper second investigation into signature
+  storage and Kyverno admission. **Authoritative on §4a, §6, §8.** Worth reading in full alongside
+  this brief; its §8 has the complete `apiCall` policy skeleton and verifier endpoint contract.
+- OCM concepts: <https://ocm.software/docs/concepts/signing-and-verification/>
+
+> **Still to prove before Enforce mode / commit:** (1) the interactive `ocm sign --keyless`
+> round-trip is unproven (risk #1); (2) confirm OCM's recorded image digest equals the registry
+> manifest digest the kubelet pulls, especially for multi-arch (risk; see demo Part 6 Step 6.1);
+> (3) rebuild the stale local CTF so the allowlist includes the dashboard image (risk #2/#7).

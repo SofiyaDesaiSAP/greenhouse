@@ -1,0 +1,81 @@
+# Kyverno ClusterPolicy — Option 1: OCM digest allowlist (NOT verifyImages).
+#
+# Rationale and the decision behind this: ../keyless-signing-discussion.md §6 (Option 1).
+#
+# WHAT THIS DOES — and does NOT do:
+#   - It does NOT verify any signature. The OCM signature is verified upstream by
+#     `ocm verify` at the air-gap boundary and by the OCM controller in-cluster
+#     (ComponentVersion READY=True). See discussion §4a for why Kyverno CANNOT verify
+#     the OCM signature.
+#   - It enforces the OUTCOME of that verification: a Pod may only run an image whose
+#     content digest is in the set of digests the OCM signature covered. The allowlist
+#     is generated from the signed bundle by `make gen-image-allowlist` into the
+#     ConfigMap `ocm-signed-image-digests` (namespace kyverno).
+#
+# REQUIRES pods to be digest-pinned (@sha256). deploy/kro-rgd.yaml sets image.digest
+# for manager/idproxy/cors-proxy/authz/dashboard so they render repository@sha256.
+#
+# EXCEPTION — postgresql: the sapcc postgres image is pulled by TAG, has no digest knob,
+# and is NOT an OCM resource (not covered by the signature). It is exempted by registry
+# path. If you later bring postgres under OCM, remove the exception.
+#
+# Start in Audit; flip validationFailureAction to Enforce once the allowlist is populated
+# from a fresh signed build and observed clean.
+---
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: ocm-digest-allowlist
+  annotations:
+    policies.kyverno.io/title: OCM Signed-Digest Allowlist (Option 1)
+    policies.kyverno.io/category: Supply Chain Security
+    policies.kyverno.io/description: >-
+      Pods in the greenhouse namespaces may only run images whose content digest is in
+      the OCM-signed allowlist (ConfigMap ocm-signed-image-digests). Enforces the outcome
+      of OCM signature verification without re-verifying a signature at admission.
+spec:
+  validationFailureAction: Audit        # → Enforce after the allowlist is populated & observed
+  background: true
+  rules:
+    - name: image-digest-must-be-ocm-signed
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              namespaces:
+                - greenhouse
+                - cert-manager
+                - ocm-system
+      # Pull the signed-digest list from the ConfigMap into a policy variable.
+      context:
+        - name: allowed
+          configMap:
+            name: ocm-signed-image-digests
+            namespace: kyverno
+      validate:
+        message: >-
+          Image is not permitted: it must come from the RBSC registry, be pinned by
+          @sha256 digest, and that digest must appear in the OCM-signed allowlist
+          (ConfigMap kyverno/ocm-signed-image-digests). postgres (sapcc) is exempt.
+        foreach:
+          - list: "request.object.spec.[initContainers, containers, ephemeralContainers][]"
+            # Skip the postgres exception: sapcc image, tag-pinned, not OCM-signed.
+            preconditions:
+              all:
+                - key: "{{ contains(element.image, '/sapcc/') }}"
+                  operator: Equals
+                  value: false
+            deny:
+              conditions:
+                any:
+                  # (a) must be digest-pinned
+                  - key: "{{ contains(element.image, '@sha256:') }}"
+                    operator: Equals
+                    value: false
+                  # (b) the digest must be one the OCM signature covered.
+                  #     split on '@' → take the digest half → must be in the allowlist lines.
+                  #     NotIn: scalar (the image digest) not a member of the list.
+                  - key: "{{ split(element.image, '@')[1] || '' }}"
+                    operator: NotIn
+                    value: "{{ allowed.data.digests | split(@, '\n') }}"

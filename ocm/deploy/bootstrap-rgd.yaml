@@ -1,0 +1,160 @@
+# kro ResourceGraphDefinition for Greenhouse Bootstrap
+#
+# Installs cluster prerequisites (cert-manager, prometheus-operator CRDs, OCM controller)
+# via kro + Flux, pulling charts from the RBSC registry (air-gapped source).
+# prometheus-operator-crds is the one exception — not in the OCM bundle, pulls from
+# public OCI (ghcr.io/prometheus-community).
+#
+# Applied via kustomize (deploy/kustomization.yaml).
+# When kro processes this RGD it creates the GreenhouseBootstrap CRD.
+# Apply the instance separately: kubectl apply -f deploy/bootstrap-instance.yaml
+#
+# Schema uses kro v0.9.x SimpleSchema syntax (inline type strings, not {type: string}).
+# Status fields use CEL expressions projecting from managed HelmRelease conditions.
+apiVersion: kro.run/v1alpha1
+kind: ResourceGraphDefinition
+metadata:
+  name: greenhouse-bootstrap
+  namespace: greenhouse
+spec:
+  schema:
+    apiVersion: v1alpha1
+    kind: GreenhouseBootstrap
+    spec:
+      # RBSC registry prefix — charts land here after ocm transfer --copy-resources.
+      # OCM path-preservation strips the source registry host and keeps the path,
+      # so ghcr.io/cloudoperators/... becomes <rbscRegistry>/cloudoperators/...
+      rbscRegistry: "string"
+      # Name of the docker-registry Secret in the greenhouse namespace used to
+      # authenticate OCIRepository pulls from the private RBSC.
+      registrySecretName: "string"
+      certManagerVersion: "string"
+      # prometheus-operator-crds is NOT in the OCM bundle — pulls from public OCI.
+      prometheusCrdsVersion: "string"
+      ocmControllerVersion: "string"
+
+    status:
+      certManagerReady: "${certManagerHR.status.conditions[0].status}"
+      ocmControllerReady: "${ocmControllerHR.status.conditions[0].status}"
+
+  resources:
+
+    # ── prometheus-operator CRDs ─────────────────────────────────────────────
+    # Not in the OCM bundle; pulled from public OCI as an exception.
+    # Required because the greenhouse chart creates PrometheusRule resources
+    # unconditionally — without this CRD the greenhouse HelmRelease fails.
+    - id: prometheusOCIRepo
+      template:
+        apiVersion: source.toolkit.fluxcd.io/v1
+        kind: OCIRepository
+        metadata:
+          name: prometheus-crds-bootstrap
+          namespace: greenhouse
+        spec:
+          interval: 10m
+          url: "oci://ghcr.io/prometheus-community/charts/prometheus-operator-crds"
+          ref:
+            tag: "${schema.spec.prometheusCrdsVersion}"
+
+    - id: prometheusHR
+      template:
+        apiVersion: helm.toolkit.fluxcd.io/v2
+        kind: HelmRelease
+        metadata:
+          name: prometheus-crds
+          namespace: greenhouse
+        spec:
+          interval: 10m
+          targetNamespace: monitoring
+          install:
+            createNamespace: true
+          chartRef:
+            kind: OCIRepository
+            name: prometheus-crds-bootstrap
+            namespace: greenhouse
+
+    # ── cert-manager ─────────────────────────────────────────────────────────
+    # Pulled from RBSC. OCM path-preservation maps:
+    #   ghcr.io/cloudoperators/greenhouse-extensions/charts/cert-manager
+    #   → <rbscRegistry>/cloudoperators/greenhouse-extensions/charts/cert-manager
+    - id: certManagerOCIRepo
+      template:
+        apiVersion: source.toolkit.fluxcd.io/v1
+        kind: OCIRepository
+        metadata:
+          name: cert-manager-bootstrap
+          namespace: greenhouse
+        spec:
+          interval: 10m
+          url: "oci://${schema.spec.rbscRegistry}/cloudoperators/greenhouse-extensions/charts/cert-manager"
+          ref:
+            tag: "${schema.spec.certManagerVersion}"
+          secretRef:
+            name: "${schema.spec.registrySecretName}"
+
+    - id: certManagerHR
+      template:
+        apiVersion: helm.toolkit.fluxcd.io/v2
+        kind: HelmRelease
+        metadata:
+          name: cert-manager
+          namespace: greenhouse
+        spec:
+          interval: 10m
+          targetNamespace: cert-manager
+          install:
+            createNamespace: true
+            crds: CreateReplace
+          upgrade:
+            crds: CreateReplace
+          chartRef:
+            kind: OCIRepository
+            name: cert-manager-bootstrap
+            namespace: greenhouse
+          values:
+            installCRDs: true
+
+    # ── OCM controller ────────────────────────────────────────────────────────
+    # Pulled from RBSC. OCM path-preservation maps:
+    #   ghcr.io/open-component-model/helm/ocm-controller
+    #   → <rbscRegistry>/open-component-model/helm/ocm-controller
+    # MUST depend on cert-manager — OCM controller uses cert-manager for webhook TLS.
+    # MUST set tlsCert.generateTlsCert=true — without it the internal registry has no
+    # TLS cert and all Flux OCIRepository pulls from registry.ocm-system... fail.
+    - id: ocmControllerOCIRepo
+      template:
+        apiVersion: source.toolkit.fluxcd.io/v1
+        kind: OCIRepository
+        metadata:
+          name: ocm-controller-bootstrap
+          namespace: greenhouse
+        spec:
+          interval: 10m
+          url: "oci://${schema.spec.rbscRegistry}/open-component-model/helm/ocm-controller"
+          ref:
+            tag: "v${schema.spec.ocmControllerVersion}"
+          secretRef:
+            name: "${schema.spec.registrySecretName}"
+
+    - id: ocmControllerHR
+      template:
+        apiVersion: helm.toolkit.fluxcd.io/v2
+        kind: HelmRelease
+        metadata:
+          name: ocm-controller
+          namespace: greenhouse
+        spec:
+          interval: 10m
+          targetNamespace: ocm-system
+          install:
+            createNamespace: true
+          dependsOn:
+            - name: cert-manager
+              namespace: greenhouse
+          chartRef:
+            kind: OCIRepository
+            name: ocm-controller-bootstrap
+            namespace: greenhouse
+          values:
+            tlsCert:
+              generateTlsCert: true

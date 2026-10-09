@@ -27,6 +27,13 @@ spec:
       ocmControllerVersion: "string"
       greenhouseSnapshotPath: "string"
       greenhouseVersion: "string"
+      # Image content digests from the OCM-signed bundle (Option 1 digest pinning).
+      # Pods run by @sha256 so the Kyverno allowlist can enforce "only signed content runs".
+      # greenhouseImageDigest pins the shared greenhouse binary (manager/idproxy/cors-proxy/authz).
+      # dashboardImageDigest pins the dashboard UI image. Format: "sha256:<hex>".
+      # Get values from: make -f Makefile.ocm print-image-digests
+      greenhouseImageDigest: "string"
+      dashboardImageDigest: "string"
       tlsSecretName: "string"
       valuesSecretName: "string"
 
@@ -163,22 +170,34 @@ spec:
               valuesKey: values.yaml
               optional: false
           values:
+            # Image digest pinning (Option 1). Each subchart's _helpers.tpl renders
+            # repository@digest when image.digest is set (digest takes precedence over tag),
+            # so pods run by @sha256 — exactly the content the OCM signature covers.
+            # manager/idproxy/cors-proxy/authz share the one greenhouse binary image → one digest.
             manager:
               controllerManager:
                 image:
                   repository: "${schema.spec.imageRegistry}/cloudoperators/greenhouse"
+                  digest: "${schema.spec.greenhouseImageDigest}"
             idproxy:
               image:
                 repository: "${schema.spec.imageRegistry}/cloudoperators/greenhouse"
+                digest: "${schema.spec.greenhouseImageDigest}"
             cors-proxy:
               image:
                 repository: "${schema.spec.imageRegistry}/cloudoperators/greenhouse"
+                digest: "${schema.spec.greenhouseImageDigest}"
             authz:
               image:
                 repository: "${schema.spec.imageRegistry}/cloudoperators/greenhouse"
+                digest: "${schema.spec.greenhouseImageDigest}"
             dashboard:
               image:
                 repository: "${schema.spec.imageRegistry}/cloudoperators/juno-app-greenhouse"
+                digest: "${schema.spec.dashboardImageDigest}"
+            # postgresql-ng: sapcc image, pulled by tag — NO digest knob, NOT an OCM resource.
+            # It cannot be digest-pinned and is not covered by the OCM signature; the Kyverno
+            # policy exempts it by registry+tag. See keyless-signing-discussion.md §6.
             postgresqlng:
               global:
                 registry: "${schema.spec.imageRegistry}/sapcc"

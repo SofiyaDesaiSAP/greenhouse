@@ -5,3 +5,4 @@ resources:
   - componentversion.yaml
   - resources.yaml
   - kro-rgd.yaml
+  - bootstrap-rgd.yaml

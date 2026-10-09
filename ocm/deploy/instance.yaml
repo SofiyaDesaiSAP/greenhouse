@@ -24,5 +24,11 @@ spec:
   greenhouseSnapshotPath: "sha-6660783123634428906"
   greenhouseVersion: "0.16.1"
 
+  # Image content digests from the OCM-signed bundle (Option 1 digest pinning).
+  # Get current values with: make -f Makefile.ocm print-image-digests
+  # greenhouseImageDigest pins manager/idproxy/cors-proxy/authz (one shared binary image).
+  greenhouseImageDigest: "sha256:0c0cac95a1dafbb9a22d64aaf3cc425e990f2eb9b7863b3e53749e2878472b13"
+  dashboardImageDigest: "sha256:ae366951d37198d05d6b3d5859dec8181530d380ea7b9a8a8cfc5a8f07937631"
+
   tlsSecretName: "ocm-registry-tls-certs"
   valuesSecretName: "greenhouse-values"
