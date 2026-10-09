@@ -478,7 +478,7 @@ kubectl create secret docker-registry greenhouse-ocm-registry-creds \
 
 ---
 
-### Step 5 — Apply all OCM + bootstrap manifests
+### Step 5 — Apply bootstrap manifests (kro RGDs only)
 
 ```bash
 kubectl apply -k deploy/
@@ -486,14 +486,13 @@ kubectl apply -k deploy/
 
 This applies:
 - `namespace.yaml` — greenhouse namespace (idempotent)
-- `componentversion.yaml` — OCM CR (will sit Pending until OCM controller comes up; that's expected)
-- `resources.yaml` — 5 OCM Resource CRs (also Pending until OCM controller)
 - `kro-rgd.yaml` — `GreenhouseStack` RGD (kro processes immediately, creates `GreenhouseStack` CRD)
 - `bootstrap-rgd.yaml` — `GreenhouseBootstrap` RGD (kro processes immediately, creates `GreenhouseBootstrap` CRD)
 
-**Talking point:** "One apply kicks off two RGDs simultaneously. The bootstrap RGD installs
-the cluster prerequisites. The greenhouse RGD defines the schema for deploying greenhouse
-itself. They run in parallel from this single command."
+**Why `componentversion.yaml` and `resources.yaml` are NOT here:** Those are OCM CRs
+(`ComponentVersion`, `Resource`) whose CRDs are registered by the OCM controller — which
+doesn't exist yet. Applying them now would fail with `no matches for kind`. They are applied
+separately in Part 4 after the bootstrap completes and the OCM controller is running.
 
 ---
 
@@ -631,13 +630,22 @@ it by name via `spec.valuesSecretName`.
 ## PART 4 — Deploy *(THE DEMO MOMENT)*
 
 > This is where you prove Acceptance Criteria 3: "greenhouse core components should be
-> installable via OCM." The OCM controller (now running from the bootstrap) fetches the bundle,
-> extracts chart Snapshots, and the main kro RGD takes over.
+> installable via OCM." Apply the OCM CRs now that the OCM controller is running, then
+> the main kro RGD takes over.
 
-### Watch OCM resolve the bundle
+### Step 1 — Apply the OCM CRs
 
-By this point the OCM controller is running and has been reconciling the ComponentVersion and
-Resource CRs since they were applied in Part 2 Step 5.
+The OCM controller CRDs (`ComponentVersion`, `Resource`) are now registered. Apply the files
+that were excluded from the kustomization:
+
+```bash
+kubectl apply -f deploy/componentversion.yaml
+kubectl apply -f deploy/resources.yaml
+```
+
+### Step 2 — Watch OCM resolve the bundle
+
+### Step 2 — Watch OCM resolve the bundle
 
 ```bash
 kubectl get componentversions,resources -n greenhouse
