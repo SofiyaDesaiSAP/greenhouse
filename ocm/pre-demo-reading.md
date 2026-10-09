@@ -542,6 +542,16 @@ and the OCM controller chart in the signed component descriptor. `ocm verify` co
 digests before the transfer runs, so the bootstrap charts are still covered by the supply-chain
 integrity boundary.
 
+**After the RBSC transfer completes, trigger immediate reconciliation** (don't wait for the
+10m interval to expire):
+
+```bash
+kubectl annotate ocirepository cert-manager-bootstrap -n greenhouse \
+  reconcile.fluxcd.io/requestedAt="$(date +%s)" --overwrite
+kubectl annotate ocirepository ocm-controller-bootstrap -n greenhouse \
+  reconcile.fluxcd.io/requestedAt="$(date +%s)" --overwrite
+```
+
 **Watch the bootstrap unfold:**
 
 ```bash
