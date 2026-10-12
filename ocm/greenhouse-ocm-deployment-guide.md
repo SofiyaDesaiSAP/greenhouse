@@ -91,50 +91,53 @@ ocm add componentversions \
 <img width="991" height="719" alt="Screenshot 2026-10-12 at 16 44 47" src="https://github.com/user-attachments/assets/3132b50d-87ef-4c55-92f3-2e060d948807" />
 
 
-### Step 3 — Sign the bundle (keyless / Sigstore)
+### Step 3 — Push CTF to GHCR (central registry)
 
 ```bash
-ocm sign componentversions \
-  --keyless \
-  --signature greenhouse-release \
-  --algorithm sigstore-v2 \
-  --repo directory::./greenhouse-bundle.ctf \
-  github.com/cloudoperators/greenhouse:0.23.0
-```
-<img width="1748" height="579" alt="image" src="https://github.com/user-attachments/assets/91ccc43f-e554-4391-833a-eeaf6029d216" />
-
-Browser opens for OIDC login. One signature covers the entire bundle transitively.
-
-**Screenshot placeholder — sign output showing `Verification succeeded` + identity:**
-
-<img width="411" height="335" alt="image" src="https://github.com/user-attachments/assets/8f601a2b-2b02-4a6b-9779-74743ec076a6" />
-
-<img width="1745" height="188" alt="image" src="https://github.com/user-attachments/assets/97361f5a-406f-4f56-8a55-6d937df8992f" />
-
-
-### Step 4 — Push CTF to GHCR (central registry)
-
-```bash
-GITHUB_TOKEN=$GITHUB_TOKEN ocm transfer ctf \
+GITHUB_TOKEN=$(gh auth token) ocm transfer ctf \
   --overwrite \
   --copy-resources \
   greenhouse-bundle.ctf \
-  oci://ghcr.io/sofiyadesaisap/greenhouse
+  oci://ghcr.io/sofiyadesaisap/greenhouse 2>&1 | tee ocm-push-output.txt
 ```
+
+**`--copy-resources` rewrites component descriptors** to point to the new registry location.
+This must happen before signing — signing the local CTF first and then transferring would
+invalidate the signature because the descriptors change during transfer.
 
 Verify all 6 components landed:
 
 ```bash
 ocm get componentversions \
   "oci://ghcr.io/sofiyadesaisap/greenhouse//github.com/cloudoperators/greenhouse:0.23.0" \
-  --recursive
+  --recursive 2>&1 | tee ocm-verify-ghcr-output.txt
 ```
 
-ocm get componentversions \
-  "oci://ghcr.io/sofiyadesaisap/greenhouse//github.com/cloudoperators/greenhouse:0.23.0" \
-  --recursive
-
 <img width="1100" height="143" alt="image" src="https://github.com/user-attachments/assets/69a063bf-0858-444c-ba73-ee4fb6b8bbc0" />
+
+### Step 4 — Sign the bundle in GHCR (keyless / Sigstore)
+
+Sign **in GHCR** — not the local CTF — so the signature covers the final post-transfer state:
+
+```bash
+ocm sign componentversions \
+  --keyless \
+  --signature greenhouse-release \
+  --algorithm sigstore-v2 \
+  --repo oci://ghcr.io/sofiyadesaisap/greenhouse \
+  github.com/cloudoperators/greenhouse:0.23.0 2>&1 | tee ocm-sign-output.txt
+```
+
+Browser opens for OIDC login. One signature transitively covers every chart, image, and
+sub-component in the bundle.
+
+<img width="1748" height="579" alt="image" src="https://github.com/user-attachments/assets/91ccc43f-e554-4391-833a-eeaf6029d216" />
+
+<img width="411" height="335" alt="image" src="https://github.com/user-attachments/assets/8f601a2b-2b02-4a6b-9779-74743ec076a6" />
+
+<img width="1745" height="188" alt="image" src="https://github.com/user-attachments/assets/97361f5a-406f-4f56-8a55-6d937df8992f" />
+
+**Screenshot placeholder — `successfully signed` output with digest:**
 
 ### Step 5 — Verify signature, then transfer to RBSC (on-site / air-gap registry)
 
