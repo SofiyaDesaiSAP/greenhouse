@@ -137,7 +137,6 @@ sub-component in the bundle.
 
 <img width="1745" height="188" alt="image" src="https://github.com/user-attachments/assets/97361f5a-406f-4f56-8a55-6d937df8992f" />
 
-**Screenshot placeholder — `successfully signed` output with digest:**
 
 ### Step 5 — Verify signature, then transfer to RBSC (on-site / air-gap registry)
 
@@ -150,7 +149,8 @@ ocm verify componentversions \
   github.com/cloudoperators/greenhouse:0.23.0
 ```
 
-**Screenshot placeholder — `Verification succeeded` output:**
+<img width="1345" height="425" alt="image" src="https://github.com/user-attachments/assets/e006c716-63ac-4982-a2df-a84d21bceee6" />
+
 
 If rebuilding after a change to `component-constructor.yaml`, delete stale RBSC packages
 for cert-manager and ocm-controller first (OCM skips re-transfer of "already present"
