@@ -88,7 +88,8 @@ ocm add componentversions \
   OCM_CONTROLLER_VERSION=0.33.0
 ```
 
-**Screenshot placeholder — `ocm add componentversions` success output:**
+<img width="991" height="719" alt="Screenshot 2026-10-12 at 16 44 47" src="https://github.com/user-attachments/assets/3132b50d-87ef-4c55-92f3-2e060d948807" />
+
 
 ### Step 3 — Sign the bundle (keyless / Sigstore)
 
