@@ -98,7 +98,7 @@ GITHUB_TOKEN=$(gh auth token) ocm transfer ctf \
   --overwrite \
   --copy-resources \
   greenhouse-bundle.ctf \
-  oci://ghcr.io/sofiyadesaisap/greenhouse 2>&1 | tee ocm-push-output.txt
+  oci://ghcr.io/sofiyadesaisap/greenhouse
 ```
 
 **`--copy-resources` rewrites component descriptors** to point to the new registry location.
