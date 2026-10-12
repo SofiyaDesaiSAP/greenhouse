@@ -125,7 +125,7 @@ ocm sign componentversions \
   --signature greenhouse-release \
   --algorithm sigstore-v2 \
   --repo oci://ghcr.io/sofiyadesaisap/greenhouse \
-  github.com/cloudoperators/greenhouse:0.23.0 2>&1 | tee ocm-sign-output.txt
+  github.com/cloudoperators/greenhouse:0.23.0
 ```
 
 Browser opens for OIDC login. One signature transitively covers every chart, image, and
