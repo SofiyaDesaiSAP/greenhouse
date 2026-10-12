@@ -513,7 +513,7 @@ Watch:
 kubectl get helmreleases -n greenhouse -w
 ```
 
-<img width="1164" height="121" alt="image" src="https://github.com/user-attachments/assets/b2fc178d-656e-4c08-92df-83d3f7acf080" />
+<img width="1150" height="89" alt="image" src="https://github.com/user-attachments/assets/a0b866cd-b3ac-4dc2-9a51-6ada7fbf023c" />
 
 
 ---
@@ -547,7 +547,8 @@ Pods (kro-system):   kro                                              — Runnin
 Pods (flux-system):  helm, source, kustomize, notification            — Running
 ```
 
-**Screenshot placeholder — full status output:**
+<img width="1398" height="621" alt="image" src="https://github.com/user-attachments/assets/6479865d-49b2-446b-980a-e52f916b955d" />
+
 
 ### Prove zero external registry dependency
 
@@ -559,7 +560,7 @@ kubectl get pods -n greenhouse \
 
 Every line must start with `ghcr.io/sofiyadesaisap/greenhouse-rbsc/`.
 
-**Screenshot placeholder — all images from RBSC:**
+<img width="961" height="59" alt="image" src="https://github.com/user-attachments/assets/aa47605c-9207-4ab9-bf9c-24de66b4ab4c" />
 
 ---
 
