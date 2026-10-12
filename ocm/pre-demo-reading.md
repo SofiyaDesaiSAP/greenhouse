@@ -280,9 +280,9 @@ everything right is the component path.
 
 ### Step 5 — If `component-constructor.yaml` was changed (rebuild + re-sign + re-transfer)
 
-Any change to `component-constructor.yaml` (e.g. switching `input.type: helm` to
-`access.type: ociArtifact`, bumping a version, adding a resource) requires a full rebuild
-of the CTF bundle, a new signature, and re-transfer to both GHCR and RBSC.
+Any change to `component-constructor.yaml` (e.g. bumping a version, adding a resource)
+requires a full rebuild of the CTF bundle, a new signature, and re-transfer to both GHCR
+and RBSC.
 
 ```bash
 # 1. Rebuild the CTF from scratch
@@ -309,7 +309,7 @@ ocm sign componentversions \
   github.com/cloudoperators/greenhouse:0.16.1
 
 # 3. Re-push to GHCR (central registry)
-GITHUB_TOKEN=$GITHUB_TOKEN ocm transfer ctf \
+GITHUB_TOKEN=$(gh auth token) ocm transfer ctf \
   --overwrite \
   --copy-resources \
   greenhouse-bundle.ctf \
@@ -321,20 +321,63 @@ ocm verify componentversions \
   --signature greenhouse-release \
   --repo oci://ghcr.io/sofiyadesaisap/greenhouse \
   github.com/cloudoperators/greenhouse:0.16.1
+```
 
-# 5. Re-transfer to RBSC
-ocm transfer componentversion \
-  --copy-resources \
-  --recursive \
+**Before re-transferring to RBSC — delete stale cert-manager and ocm-controller packages.**
+
+OCM compares component versions using normalized content digests (blob digest only, not
+access method). If cert-manager or ocm-controller were previously transferred with
+`input.type: helm`, they are "already present" from OCM's perspective even after the
+descriptor changed to `access.type: ociArtifact`. OCM will skip them and the chart blobs
+will never land at the paths the bootstrap OCIRepositories expect.
+
+Delete the stale packages from RBSC first:
+
+```bash
+for pkg in \
+  "greenhouse-rbsc/github.com/cloudoperators/greenhouse/prerequisites/cert-manager/cert-manager" \
+  "greenhouse-rbsc/component-descriptors/github.com/cloudoperators/greenhouse/prerequisites/cert-manager" \
+  "greenhouse-rbsc/github.com/cloudoperators/greenhouse/prerequisites/ocm-controller/ocm-controller" \
+  "greenhouse-rbsc/component-descriptors/github.com/cloudoperators/greenhouse/prerequisites/ocm-controller"; do
+  encoded=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1],safe=''))" "$pkg")
+  result=$(gh api --method DELETE "/user/packages/container/${encoded}" 2>&1)
+  [[ -z "$result" ]] && echo "✓ deleted: $pkg" || echo "✗ failed (may not exist): $pkg"
+done
+```
+
+The `✗ failed` lines are fine if the packages don't exist yet — that just means it's a
+fresh RBSC and no cleanup is needed.
+
+```bash
+# 5. Transfer from CTF directly to RBSC
+# (NOT from GHCR — GHCR may also have stale descriptors for these two components)
+GITHUB_TOKEN=$(gh auth token) ocm transfer ctf \
   --overwrite \
-  "oci://ghcr.io/sofiyadesaisap/greenhouse//github.com/cloudoperators/greenhouse:0.16.1" \
+  --copy-resources \
+  greenhouse-bundle.ctf \
   oci://ghcr.io/sofiyadesaisap/greenhouse-rbsc
 ```
 
-After the RBSC is updated, the OCM controller on-cluster will reconcile the
-`ComponentVersion` CR and re-extract updated Snapshots automatically (on the next poll
-interval, or trigger immediately with `kubectl annotate componentversion greenhouse \
-reconcile.ocm.software/requestedAt="$(date +%s)" -n greenhouse`).
+After cert-manager and ocm-controller were deleted, OCM now treats them as new and copies
+the chart blobs to the correct paths:
+
+```
+cert-manager-chart[helmChart](cloudoperators/greenhouse-extensions/charts/cert-manager:1.20.1)
+ocm-controller-chart[helmChart](open-component-model/helm/ocm-controller:v0.33.0)
+```
+
+After the RBSC is updated, trigger immediate reconciliation on the bootstrap OCIRepositories
+(don't wait for the 10m interval):
+
+```bash
+kubectl annotate ocirepository cert-manager-bootstrap -n greenhouse \
+  reconcile.fluxcd.io/requestedAt="$(date +%s)" --overwrite
+kubectl annotate ocirepository ocm-controller-bootstrap -n greenhouse \
+  reconcile.fluxcd.io/requestedAt="$(date +%s)" --overwrite
+```
+
+Then watch: `kubectl get helmreleases -n greenhouse -w` — cert-manager flips Ready, then
+ocm-controller follows.
 
 ---
 
@@ -825,7 +868,7 @@ external registry. Everything comes from the RBSC populated by the one-time `ocm
 | Symptom | Likely cause | Fix |
 |---|---|---|
 | `GreenhouseBootstrap CRD not found` | kro hasn't processed bootstrap-rgd.yaml yet | Wait 30s; check `kubectl get pods -n kro-system` |
-| `cert-manager / ocm-controller HelmRelease` stuck | OCIRepository pull failing from RBSC | Check registry secret is in `greenhouse` ns; verify RBSC paths in `bootstrap-instance.yaml` |
+| `cert-manager / ocm-controller HelmRelease` stuck | OCIRepository MANIFEST_UNKNOWN after re-transfer | OCM skipped re-transfer ("already present"). Delete stale packages from RBSC (Part 0 Step 5), re-run CTF → RBSC transfer, then annotate OCIRepositories to trigger immediate reconciliation |
 | `ComponentVersion READY=False` | Transfer failed or registry secret wrong | Re-run `ocm transfer`; re-create registry secret |
 | `OCIRepository: secret not found` (main deploy) | TLS cert not copied to greenhouse ns | Re-run the TLS copy command (Part 2 Step 8) |
 | `HelmRelease stuck past timeout` | Helm state corrupted | Delete the HelmRelease + its helm secret, restart `helm-controller`, re-apply `kubectl apply -k deploy/` |
