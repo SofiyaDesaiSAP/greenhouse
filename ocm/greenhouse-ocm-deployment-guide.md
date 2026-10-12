@@ -404,7 +404,8 @@ kubectl apply -f deploy/componentversion.yaml
 kubectl apply -f deploy/resources.yaml
 ```
 
-**Screenshot placeholder — `kubectl apply` output:**
+<img width="498" height="119" alt="image" src="https://github.com/user-attachments/assets/cc0c0647-4a0b-4ca3-9f53-eedfe913ec73" />
+
 
 ### Step 2 — Watch OCM resolve the bundle
 
@@ -414,7 +415,8 @@ kubectl get componentversion,resource -n greenhouse
 
 Wait for `ComponentVersion` `READY=True` and all 5 `Resource` objects `READY=True`.
 
-**Screenshot placeholder — all resources Ready:**
+<img width="700" height="147" alt="image" src="https://github.com/user-attachments/assets/0b740e04-5848-4e3d-ab41-d3b9ddcf9e2d" />
+
 
 ### Step 3 — Get Snapshot paths
 
@@ -436,7 +438,8 @@ greenhouse-stack-rgd   sha-<hash>                 0.23.0
 
 The `sha-NNNN` values are cluster-specific and change between deploys.
 
-**Screenshot placeholder — snapshot output:**
+<img width="759" height="117" alt="image" src="https://github.com/user-attachments/assets/8876ad83-7c79-4e0c-a70e-d2992d895cf6" />
+
 
 ### Step 4 — Update `deploy/instance.yaml`
 
@@ -510,7 +513,8 @@ Watch:
 kubectl get helmreleases -n greenhouse -w
 ```
 
-**Screenshot placeholder — greenhouse HelmRelease `Helm install succeeded`:**
+<img width="1164" height="121" alt="image" src="https://github.com/user-attachments/assets/b2fc178d-656e-4c08-92df-83d3f7acf080" />
+
 
 ---
 
