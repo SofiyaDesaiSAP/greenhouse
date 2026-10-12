@@ -101,10 +101,16 @@ ocm sign componentversions \
   --repo directory::./greenhouse-bundle.ctf \
   github.com/cloudoperators/greenhouse:0.23.0
 ```
+<img width="1748" height="579" alt="image" src="https://github.com/user-attachments/assets/91ccc43f-e554-4391-833a-eeaf6029d216" />
 
 Browser opens for OIDC login. One signature covers the entire bundle transitively.
 
 **Screenshot placeholder — sign output showing `Verification succeeded` + identity:**
+
+<img width="411" height="335" alt="image" src="https://github.com/user-attachments/assets/8f601a2b-2b02-4a6b-9779-74743ec076a6" />
+
+<img width="1745" height="188" alt="image" src="https://github.com/user-attachments/assets/97361f5a-406f-4f56-8a55-6d937df8992f" />
+
 
 ### Step 4 — Push CTF to GHCR (central registry)
 
