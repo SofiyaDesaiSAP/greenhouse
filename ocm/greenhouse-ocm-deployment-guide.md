@@ -130,7 +130,11 @@ ocm get componentversions \
   --recursive
 ```
 
-**Screenshot placeholder — 6 component rows in GHCR:**
+ocm get componentversions \
+  "oci://ghcr.io/sofiyadesaisap/greenhouse//github.com/cloudoperators/greenhouse:0.23.0" \
+  --recursive
+
+<img width="1100" height="143" alt="image" src="https://github.com/user-attachments/assets/69a063bf-0858-444c-ba73-ee4fb6b8bbc0" />
 
 ### Step 5 — Verify signature, then transfer to RBSC (on-site / air-gap registry)
 
