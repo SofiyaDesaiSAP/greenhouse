@@ -160,6 +160,13 @@ fully self-contained chart directory to package.
 
 ### Step 2 — Build the Multi-Component CTF Archive
 
+**Before building, verify `GREENHOUSE_VERSION` matches the chart's `version:` field:**
+
+```bash
+grep "^version:" ../charts/greenhouse/Chart.yaml
+# must match GREENHOUSE_VERSION below — Flux validates these match at deploy time
+```
+
 ```bash
 rm -rf greenhouse-bundle.ctf
 
@@ -168,7 +175,7 @@ ocm add componentversions \
   --file greenhouse-bundle.ctf \
   --create \
   component-constructor.yaml \
-  GREENHOUSE_VERSION=0.16.1 \
+  GREENHOUSE_VERSION=0.23.0 \
   "GREENHOUSE_IMAGE_REF=ghcr.io/cloudoperators/greenhouse:v0.16.1" \
   "DASHBOARD_IMAGE_REF=ghcr.io/cloudoperators/juno-app-greenhouse@sha256:ae366951d37198d05d6b3d5859dec8181530d380ea7b9a8a8cfc5a8f07937631" \
   CERT_MANAGER_VERSION=1.20.1 \
@@ -181,8 +188,14 @@ ocm add componentversions \
 file has `${GREENHOUSE_VERSION}` placeholders — `--addenv` expands them directly, with no
 external `envsubst` needed. See the Technology Primer for what `component-constructor.yaml` is.
 
+**Why `GREENHOUSE_VERSION` ≠ `GREENHOUSE_IMAGE_REF` version:** The Helm chart version
+(`0.23.0` in `Chart.yaml`) and the application binary version (`v0.16.1` image tag) are
+versioned independently. `GREENHOUSE_VERSION` must match `Chart.yaml` because Flux
+source-controller validates that the OCI artifact tag equals the chart's internal version
+field. `GREENHOUSE_IMAGE_REF` can point to any valid image regardless.
+
 **What gets produced:** A `greenhouse-bundle.ctf/` directory — an OCI layout containing 6
-component versions. The umbrella component `github.com/cloudoperators/greenhouse:0.16.1`
+component versions. The umbrella component `github.com/cloudoperators/greenhouse:0.23.0`
 references all 5 others via component references. When you later do `ocm transfer --recursive`,
 OCM follows those references and moves all 6 together.
 
@@ -196,7 +209,7 @@ ocm sign componentversions \
   --signature greenhouse-release \
   --algorithm sigstore-v2 \
   --repo directory::./greenhouse-bundle.ctf \
-  github.com/cloudoperators/greenhouse:0.16.1
+  github.com/cloudoperators/greenhouse:0.23.0
 ```
 
 **What keyless signing means:** See the Technology Primer (Sigstore section). In short: no
@@ -223,11 +236,11 @@ without invalidation."
 ```bash
 ocm get componentversion \
   --repo directory::./greenhouse-bundle.ctf \
-  github.com/cloudoperators/greenhouse:0.16.1
+  github.com/cloudoperators/greenhouse:0.23.0
 
 ocm get componentversion \
   --repo directory::./greenhouse-bundle.ctf \
-  github.com/cloudoperators/greenhouse/core:0.16.1
+  github.com/cloudoperators/greenhouse/core:0.23.0
 
 ocm get componentversion \
   --repo directory::./greenhouse-bundle.ctf \
@@ -269,7 +282,7 @@ the actual blobs into GHCR — making the bundle truly self-contained for air-ga
 
 ```bash
 ocm get componentversions \
-  "oci://ghcr.io/sofiyadesaisap/greenhouse//github.com/cloudoperators/greenhouse:0.16.1" \
+  "oci://ghcr.io/sofiyadesaisap/greenhouse//github.com/cloudoperators/greenhouse:0.23.0" \
   --recursive
 ```
 
@@ -292,7 +305,7 @@ ocm add componentversions \
   --file greenhouse-bundle.ctf \
   --create \
   component-constructor.yaml \
-  GREENHOUSE_VERSION=0.16.1 \
+  GREENHOUSE_VERSION=0.23.0 \
   "GREENHOUSE_IMAGE_REF=ghcr.io/cloudoperators/greenhouse:v0.16.1" \
   "DASHBOARD_IMAGE_REF=ghcr.io/cloudoperators/juno-app-greenhouse@sha256:ae366951d37198d05d6b3d5859dec8181530d380ea7b9a8a8cfc5a8f07937631" \
   CERT_MANAGER_VERSION=1.20.1 \
@@ -306,7 +319,7 @@ ocm sign componentversions \
   --signature greenhouse-release \
   --algorithm sigstore-v2 \
   --repo directory::./greenhouse-bundle.ctf \
-  github.com/cloudoperators/greenhouse:0.16.1
+  github.com/cloudoperators/greenhouse:0.23.0
 
 # 3. Re-push to GHCR (central registry)
 GITHUB_TOKEN=$(gh auth token) ocm transfer ctf \
@@ -320,7 +333,7 @@ ocm verify componentversions \
   --keyless \
   --signature greenhouse-release \
   --repo oci://ghcr.io/sofiyadesaisap/greenhouse \
-  github.com/cloudoperators/greenhouse:0.16.1
+  github.com/cloudoperators/greenhouse:0.23.0
 ```
 
 **Before re-transferring to RBSC — delete stale cert-manager and ocm-controller packages.**
@@ -394,7 +407,7 @@ ocm verify componentversions \
   --keyless \
   --signature greenhouse-release \
   --repo oci://ghcr.io/sofiyadesaisap/greenhouse \
-  github.com/cloudoperators/greenhouse:0.16.1
+  github.com/cloudoperators/greenhouse:0.23.0
 ```
 
 **Why you run this BEFORE the transfer:** This is the integrity gate at the air-gap boundary.
@@ -414,7 +427,7 @@ ocm transfer componentversion \
   --copy-resources \
   --recursive \
   --overwrite \
-  "oci://ghcr.io/sofiyadesaisap/greenhouse//github.com/cloudoperators/greenhouse:0.16.1" \
+  "oci://ghcr.io/sofiyadesaisap/greenhouse//github.com/cloudoperators/greenhouse:0.23.0" \
   oci://ghcr.io/sofiyadesaisap/greenhouse-rbsc
 ```
 
@@ -437,7 +450,7 @@ in `greenhouse-rbsc`."
 
 ```bash
 ocm get componentversions \
-  "oci://ghcr.io/sofiyadesaisap/greenhouse-rbsc//github.com/cloudoperators/greenhouse:0.16.1" \
+  "oci://ghcr.io/sofiyadesaisap/greenhouse-rbsc//github.com/cloudoperators/greenhouse:0.23.0" \
   --recursive
 ```
 
@@ -686,7 +699,38 @@ kubectl apply -f deploy/componentversion.yaml
 kubectl apply -f deploy/resources.yaml
 ```
 
-### Step 2 — Watch OCM resolve the bundle
+### Step 1b — Patch ServiceAccounts with imagePullSecrets
+
+The `manager` subchart does not support `global.imagePullSecrets` propagation — it has no
+`imagePullSecrets` template. Pods start with no pull credentials and hit `401 Unauthorized`
+against the RBSC, even when you set `global.imagePullSecrets` in `greenhouse-values.yaml`.
+
+Patch every ServiceAccount in the namespace **before** (or immediately after) the greenhouse
+HelmRelease runs:
+
+```bash
+# Delete any stale webhook configurations from a previous failed install first
+# (a webhook from a prior attempt will intercept and reject SA patches)
+kubectl delete validatingwebhookconfiguration greenhouse-validating-webhook-configuration --ignore-not-found
+kubectl delete mutatingwebhookconfiguration greenhouse-mutating-webhook-configuration --ignore-not-found
+
+# Patch all ServiceAccounts in the greenhouse namespace
+for sa in $(kubectl get serviceaccount -n greenhouse -o jsonpath='{.items[*].metadata.name}'); do
+  kubectl patch serviceaccount "$sa" -n greenhouse --type=merge \
+    -p '{"imagePullSecrets":[{"name":"greenhouse-ocm-registry-creds"}]}'
+done
+```
+
+**Why the webhook delete is needed first:** If a prior Helm install attempt failed
+mid-install, it may have registered `greenhouse-validating-webhook-configuration` and
+`greenhouse-mutating-webhook-configuration`. The webhook intercepts SA patch operations and
+rejects them with "service greenhouse-webhook-service not found" — the webhook service was
+never created because the install failed. Deleting the stale webhook configs unblocks the SA
+patches.
+
+**When to re-run this:** Helm may recreate SAs and overwrite `imagePullSecrets` on upgrade.
+If pods start showing `ImagePullBackOff` after an upgrade, delete the webhooks and re-run
+the SA patch loop above, then restart the affected pods.
 
 ### Step 2 — Watch OCM resolve the bundle
 
@@ -708,11 +752,11 @@ Output looks like:
 
 ```
 RESOURCE               REPO                      TAG
-cert-manager-chart     sha-15457104823554620187   1.20.1
+cert-manager-chart     sha-15031618658884295978   1.20.1
 kro-chart              sha-<hash>                 0.9.4
 ocm-controller-chart   sha-3868847230746277828    0.33.0
-greenhouse-chart       sha-6660783123634428906    0.16.1
-greenhouse-stack-rgd   sha-<hash>                 0.16.1
+greenhouse-chart       sha-12147715848810698429   0.23.0
+greenhouse-stack-rgd   sha-<hash>                 0.23.0
 ```
 
 **Why you need these:** kro generates `OCIRepository` objects with URLs like
@@ -729,14 +773,14 @@ spec:
   registryHost: "registry.ocm-system.svc.cluster.local:5000"
   imageRegistry: "ghcr.io/sofiyadesaisap/greenhouse-rbsc"
 
-  certManagerSnapshotPath: "sha-15457104823554620187"
+  certManagerSnapshotPath: "sha-15031618658884295978"
   certManagerVersion: "1.20.1"
 
   ocmControllerSnapshotPath: "sha-3868847230746277828"
   ocmControllerVersion: "0.33.0"
 
-  greenhouseSnapshotPath: "sha-6660783123634428906"
-  greenhouseVersion: "0.16.1"
+  greenhouseSnapshotPath: "sha-12147715848810698429"
+  greenhouseVersion: "0.23.0"
 
   greenhouseImageDigest: "sha256:0c0cac95a1dafbb9a22d64aaf3cc425e990f2eb9b7863b3e53749e2878472b13"
   dashboardImageDigest: "sha256:ae366951d37198d05d6b3d5859dec8181530d380ea7b9a8a8cfc5a8f07937631"
@@ -777,9 +821,9 @@ kubectl apply -f deploy/instance.yaml
 **What kro expands this into:**
 
 ```
-OCIRepository/cert-manager    → oci://registry.../sha-15457...  tag:1.20.1
-OCIRepository/ocm-controller  → oci://registry.../sha-38688...  tag:0.33.0
-OCIRepository/greenhouse      → oci://registry.../sha-66607...  tag:0.16.1
+OCIRepository/cert-manager    → oci://registry.../sha-15031618658884295978  tag:1.20.1
+OCIRepository/ocm-controller  → oci://registry.../sha-3868847230746277828   tag:0.33.0
+OCIRepository/greenhouse      → oci://registry.../sha-12147715848810698429  tag:0.23.0
 
 HelmRelease/cert-manager      → chartRef: OCIRepository/cert-manager
 HelmRelease/ocm-controller    → chartRef: OCIRepository/ocm-controller  dependsOn: cert-manager
@@ -823,7 +867,7 @@ kubectl get pods               -n flux-system
 Expected final state:
 
 ```
-ComponentVersion:  greenhouse        Ready=True   0.16.1
+ComponentVersion:  greenhouse        Ready=True   0.23.0
 Resources:         all 5             Ready=True
 GreenhouseStack:   greenhouse        ACTIVE
 HelmReleases:      cert-manager      Ready=True
@@ -872,6 +916,9 @@ external registry. Everything comes from the RBSC populated by the one-time `ocm
 | `ComponentVersion READY=False` | Transfer failed or registry secret wrong | Re-run `ocm transfer`; re-create registry secret |
 | `OCIRepository: secret not found` (main deploy) | TLS cert not copied to greenhouse ns | Re-run the TLS copy command (Part 2 Step 8) |
 | `HelmRelease stuck past timeout` | Helm state corrupted | Delete the HelmRelease + its helm secret, restart `helm-controller`, re-apply `kubectl apply -k deploy/` |
+| `HelmRelease RetriesExceeded` | Flux hit retry limit (1 attempt) after a failed install | `kubectl patch helmrelease greenhouse -n greenhouse --type merge -p '{"spec":{"suspend":true}}'` → `kubectl delete secret -n greenhouse -l name=greenhouse-greenhouse,owner=helm` → `kubectl patch helmrelease greenhouse -n greenhouse --type merge -p '{"spec":{"suspend":false}}'` |
 | `GreenhouseStack CRD not found` | kro hasn't processed kro-rgd.yaml yet | Wait 30s; `kubectl get resourcegraphdefinition -n greenhouse` |
 | `CrashLoopBackOff: ArtifactGenerator CRD` | Flux extension stubs not applied | `kubectl apply -f prereqs/flux-extension-stubs.yaml` |
-| `ImagePullBackOff` | `imageRegistry` wrong in `instance.yaml` | Verify it matches the RBSC path exactly; re-apply `kubectl apply -f deploy/instance.yaml` |
+| `ImagePullBackOff` on greenhouse pods | `imageRegistry` wrong in `instance.yaml`, or SA missing `imagePullSecrets` | Verify `imageRegistry` matches the RBSC path; delete stale webhook configs, then patch all SAs (Part 4 Step 1b) |
+| SA patch rejected: "service greenhouse-webhook-service not found" | Stale ValidatingWebhookConfiguration from failed install intercepts SA patches | `kubectl delete validatingwebhookconfiguration greenhouse-validating-webhook-configuration --ignore-not-found` and same for mutating; then re-run SA patch loop |
+| `cors-proxy` deploys despite `corsProxy: enabled: false` in values | Wrong values key — chart condition uses `proxy.enabled`, not `corsProxy.enabled` | Change `corsProxy: enabled: false` to `proxy: enabled: false` in your values secret, recreate the secret, and reset the HelmRelease |

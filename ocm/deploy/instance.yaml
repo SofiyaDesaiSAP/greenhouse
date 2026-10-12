@@ -13,16 +13,16 @@ metadata:
   namespace: greenhouse
 spec:
   registryHost: "registry.ocm-system.svc.cluster.local:5000"
-  imageRegistry: "ghcr.io"
+  imageRegistry: "ghcr.io/sofiyadesaisap/greenhouse-rbsc"
 
-  certManagerSnapshotPath: "sha-15457104823554620187"
-  certManagerVersion: "1.16.1"
+  certManagerSnapshotPath: "sha-15031618658884295978"
+  certManagerVersion: "1.20.1"
 
   ocmControllerSnapshotPath: "sha-3868847230746277828"
   ocmControllerVersion: "0.33.0"
 
-  greenhouseSnapshotPath: "sha-6660783123634428906"
-  greenhouseVersion: "0.16.1"
+  greenhouseSnapshotPath: "sha-12147715848810698429"
+  greenhouseVersion: "0.23.0"
 
   # Image content digests from the OCM-signed bundle (Option 1 digest pinning).
   # Get current values with: make -f Makefile.ocm print-image-digests

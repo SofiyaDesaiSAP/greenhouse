@@ -14,8 +14,8 @@ spec:
   interval: 10m
   component: github.com/cloudoperators/greenhouse
   version:
-    semver: ">=0.16.1"
+    semver: ">=0.23.0"
   repository:
-    url: ghcr.io/sofiyadesaisap/greenhouse
+    url: ghcr.io/sofiyadesaisap/greenhouse-rbsc
     secretRef:
       name: greenhouse-ocm-registry-creds

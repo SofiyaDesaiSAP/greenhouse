@@ -20,6 +20,8 @@
 
 global:
   dnsDomain: greenhouse.example.com
+  imagePullSecrets:
+    - name: greenhouse-ocm-registry-creds
   oidc:
     enabled: false
   ingress:
@@ -34,7 +36,10 @@ global:
 
 idproxy:
   enabled: false
-corsProxy:
+# NOTE: the Chart.yaml condition for cors-proxy is `proxy.enabled`, NOT `corsProxy.enabled`.
+# Using `corsProxy: enabled: false` is silently ignored and cors-proxy will still deploy.
+# Use `proxy: enabled: false` to actually disable it.
+proxy:
   enabled: false
 authz:
   enabled: false
