@@ -178,7 +178,7 @@ GITHUB_TOKEN=$(gh auth token) ocm transfer ctf \
   oci://ghcr.io/sofiyadesaisap/greenhouse-rbsc
 ```
 
-**Screenshot placeholder — transfer output showing cert-manager + ocm-controller at correct paths:**
+<img width="800" height="439" alt="Screenshot 2026-10-12 at 18 08 55" src="https://github.com/user-attachments/assets/eda5b93f-682b-41fc-9f26-05a594b93ce3" />
 
 Verify 6 components in RBSC:
 
@@ -203,7 +203,7 @@ kubectl rollout status deploy/source-controller -n flux-system --timeout=120s
 kubectl rollout status deploy/helm-controller   -n flux-system --timeout=120s
 ```
 
-**Screenshot placeholder — Flux rollout status output:**
+<img width="725" height="63" alt="image" src="https://github.com/user-attachments/assets/3bdd9425-5ea1-4f89-b23e-21f24402f835" />
 
 ### Step 2 — Install kro
 
@@ -253,7 +253,8 @@ kro processes both RGDs immediately and registers their CRDs.
 `componentversion.yaml` and `resources.yaml` are intentionally excluded — their CRDs
 (`ComponentVersion`, `Resource`) don't exist until the OCM controller is running.
 
-**Screenshot placeholder — `kubectl apply -k deploy/` output:**
+<img width="431" height="61" alt="image" src="https://github.com/user-attachments/assets/07a8d69b-8c19-4b43-b935-0bb0aace2c82" />
+
 
 ### Step 6 — Apply the bootstrap instance
 
@@ -268,6 +269,9 @@ Apply:
 ```bash
 kubectl apply -f deploy/bootstrap-instance.yaml
 ```
+
+<img width="509" height="74" alt="image" src="https://github.com/user-attachments/assets/fb0083fb-131d-43e3-a448-1c7f75dd1e5d" />
+
 
 kro expands this into:
 
@@ -298,7 +302,8 @@ kubectl get helmreleases -n greenhouse -w
 
 Expected order: `prometheus-crds` + `cert-manager` Ready (parallel), then `ocm-controller` Ready.
 
-**Screenshot placeholder — all three bootstrap HelmReleases Ready:**
+<img width="1151" height="74" alt="image" src="https://github.com/user-attachments/assets/315e5631-ca78-4f05-b48b-738d80ddcc3b" />
+
 
 ### Step 7 — Apply Flux extension stub CRDs
 
