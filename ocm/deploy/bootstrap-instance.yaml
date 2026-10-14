@@ -31,3 +31,9 @@ spec:
   certManagerVersion: "1.20.1"
   prometheusCrdsVersion: "14.0.0"
   ocmControllerVersion: "0.33.0"
+  # Set any of these to false to skip installing a prerequisite that already
+  # exists in the cluster (e.g. when deploying greenhouse-only alongside an
+  # existing OCM/cert-manager installation).
+  installCertManager: true
+  installOcmController: true
+  installPrometheusCrds: true

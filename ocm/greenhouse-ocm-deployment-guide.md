@@ -285,6 +285,13 @@ HelmRelease/cert-manager      → cert-manager ns   (parallel with prometheus-cr
 HelmRelease/ocm-controller    → ocm-system ns     (dependsOn: cert-manager)
 ```
 
+> **Skipping prerequisites that already exist**: if cert-manager, OCM controller, or prometheus-crds
+> are already installed in the cluster, set the corresponding flag to `false` in
+> `deploy/bootstrap-instance.yaml` before applying:
+> `installCertManager: false`, `installOcmController: false`, `installPrometheusCrds: false`.
+> Any component set to `false` will have its OCIRepository and HelmRelease created but immediately
+> suspended — Flux will not attempt an install.
+
 Trigger immediate reconciliation (don't wait for the 10m interval):
 
 ```bash

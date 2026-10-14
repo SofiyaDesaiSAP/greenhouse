@@ -36,6 +36,11 @@ spec:
       # prometheus-operator-crds is NOT in the OCM bundle — pulls from public OCI.
       prometheusCrdsVersion: "string"
       ocmControllerVersion: "string"
+      # Set any of these to false to skip installing a prerequisite that already
+      # exists in the cluster (e.g. when OCM/Flux are pre-installed).
+      installCertManager: "boolean"
+      installOcmController: "boolean"
+      installPrometheusCrds: "boolean"
 
     status:
       certManagerReady: "${certManagerHR.status.conditions[0].status}"
@@ -56,6 +61,7 @@ spec:
           namespace: greenhouse
         spec:
           interval: 10m
+          suspend: ${!schema.spec.installPrometheusCrds}
           url: "oci://ghcr.io/prometheus-community/charts/prometheus-operator-crds"
           ref:
             tag: "${schema.spec.prometheusCrdsVersion}"
@@ -69,6 +75,7 @@ spec:
           namespace: greenhouse
         spec:
           interval: 10m
+          suspend: ${!schema.spec.installPrometheusCrds}
           targetNamespace: monitoring
           install:
             createNamespace: true
@@ -92,6 +99,7 @@ spec:
           namespace: greenhouse
         spec:
           interval: 10m
+          suspend: ${!schema.spec.installCertManager}
           url: "oci://${schema.spec.rbscRegistry}/cloudoperators/greenhouse-extensions/charts/cert-manager"
           ref:
             tag: "${schema.spec.certManagerVersion}"
@@ -107,6 +115,7 @@ spec:
           namespace: greenhouse
         spec:
           interval: 10m
+          suspend: ${!schema.spec.installCertManager}
           targetNamespace: cert-manager
           install:
             createNamespace: true
@@ -138,6 +147,7 @@ spec:
           namespace: greenhouse
         spec:
           interval: 10m
+          suspend: ${!schema.spec.installOcmController}
           url: "oci://${schema.spec.rbscRegistry}/open-component-model/helm/ocm-controller"
           ref:
             tag: "v${schema.spec.ocmControllerVersion}"
@@ -153,12 +163,11 @@ spec:
           namespace: greenhouse
         spec:
           interval: 10m
+          suspend: ${!schema.spec.installOcmController}
           targetNamespace: ocm-system
           install:
             createNamespace: true
-          dependsOn:
-            - name: cert-manager
-              namespace: greenhouse
+          dependsOn: ${schema.spec.installCertManager ? [{"name":"cert-manager","namespace":"greenhouse"}] : []}
           chartRef:
             kind: OCIRepository
             name: ocm-controller-bootstrap

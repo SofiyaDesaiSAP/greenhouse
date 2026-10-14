@@ -1,0 +1,33 @@
+# GreenhouseBootstrap Instance — applied SEPARATELY after kro has processed the
+# bootstrap RGD and registered the GreenhouseBootstrap CRD.
+#
+# Apply with:
+#   kubectl get crd greenhousebootstraps.kro.run   # wait for this
+#   kubectl apply -f deploy/bootstrap-instance.yaml
+#
+# kro expands this into OCIRepositories + HelmReleases that install:
+#   - prometheus-operator CRDs  (public OCI — not in OCM bundle, noted exception)
+#   - cert-manager              (from RBSC: <rbscRegistry>/cloudoperators/greenhouse-extensions/charts/cert-manager)
+#   - OCM controller            (from RBSC: <rbscRegistry>/open-component-model/helm/ocm-controller)
+#
+# The RBSC registry secret (registrySecretName) must exist in the greenhouse namespace
+# before this instance is applied. Create it during bootstrap preparation:
+#   kubectl create secret docker-registry greenhouse-ocm-registry-creds \
+#     --docker-server=ghcr.io \
+#     --docker-username=<GITHUB_USER> \
+#     --docker-password=<GITHUB_TOKEN> \
+#     -n greenhouse
+#
+# After all three HelmReleases are Ready, copy the OCM TLS secret and proceed
+# to the main deploy: kubectl apply -f deploy/instance.yaml
+apiVersion: kro.run/v1alpha1
+kind: GreenhouseBootstrap
+metadata:
+  name: greenhouse-bootstrap
+  namespace: greenhouse
+spec:
+  rbscRegistry: "ghcr.io/sofiyadesaisap/greenhouse-rbsc"
+  registrySecretName: "greenhouse-ocm-registry-creds"
+  certManagerVersion: "1.20.1"
+  prometheusCrdsVersion: "14.0.0"
+  ocmControllerVersion: "0.33.0"
