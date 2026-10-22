@@ -387,7 +387,8 @@ Expected output:
 customresourcedefinition.apiextensions.k8s.io/artifactgenerators.source.extensions.fluxcd.io created
 ```
 
-<!-- SCREENSHOT: terminal showing CRD created -->
+<img width="682" height="48" alt="image" src="https://github.com/user-attachments/assets/7eeae955-3daa-45a8-bb98-0bff226d666a" />
+
 
 Greenhouse controller-manager watches `ArtifactGenerator.source.extensions.fluxcd.io`.
 Without this stub CRD it enters `CrashLoopBackOff` on startup.
@@ -419,7 +420,8 @@ Expected output:
 secret/ocm-registry-tls-certs configured
 ```
 
-<!-- SCREENSHOT: terminal showing secret copied to greenhouse namespace -->
+<img width="629" height="47" alt="image" src="https://github.com/user-attachments/assets/288d09a6-92d7-4fcb-85ea-f1a1c71e59ee" />
+
 
 ---
 
@@ -483,7 +485,8 @@ Expected output:
 secret/greenhouse-values configured
 ```
 
-<!-- SCREENSHOT: terminal showing secret created/configured -->
+<img width="597" height="47" alt="image" src="https://github.com/user-attachments/assets/554bd477-b4a5-4ff8-a709-0c0987544608" />
+
 
 ---
 
@@ -508,7 +511,8 @@ Reading image digests from RBSC for github.com/cloudoperators/greenhouse/core:0.
 deploy/instance.yaml updated. Apply with: make deploy-instance
 ```
 
-<!-- SCREENSHOT: terminal output of `make patch-instance` showing digests read and instance.yaml patched -->
+<img width="953" height="105" alt="image" src="https://github.com/user-attachments/assets/f79d7ab0-357c-4e49-90b2-be28b68f2293" />
+
 
 Current `deploy/instance.yaml`:
 
@@ -571,7 +575,8 @@ NAME                                        AGE   READY   STATUS
 helmrelease.helm.toolkit.fluxcd.io/greenhouse   45s   False   Helm install in progress
 ```
 
-<!-- SCREENSHOT: terminal showing all 4 resources in Ready state, then HelmRelease progressing -->
+<img width="1538" height="454" alt="image" src="https://github.com/user-attachments/assets/09e7027c-4f32-4d6a-aa51-f6c9c7ab9043" />
+
 
 ### Step 3 — Unblock imagePullSecrets
 
@@ -626,7 +631,7 @@ greenhouse-webhook-...                       1/1     Running   0          3m
 greenhouse-cors-proxy-...                    1/1     Running   0          3m
 ```
 
-<!-- SCREENSHOT: terminal showing HelmRelease Ready=True with "Helm upgrade succeeded" message and all greenhouse pods Running -->
+<img width="1010" height="144" alt="image" src="https://github.com/user-attachments/assets/87fc703b-2dc2-41ce-a4a9-408ad4d0dae0" />
 
 
 ---
