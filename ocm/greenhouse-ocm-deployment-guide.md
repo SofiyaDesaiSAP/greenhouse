@@ -190,7 +190,7 @@ GITHUB_TOKEN=$(gh auth token) ocm transfer ctf \
 
 <img width="800" height="439" alt="Screenshot 2026-10-12 at 18 08 55" src="https://github.com/user-attachments/assets/eda5b93f-682b-41fc-9f26-05a594b93ce3" />
 
-Verify 6 components in RBSC:
+Verify the greenhouse component in RBSC (greenhouse + core):
 
 ```bash
 ocm get componentversions \
@@ -198,19 +198,36 @@ ocm get componentversions \
   --recursive
 ```
 
-Expected output — 6 components, all showing the transferred version:
+Expected output — 2 components (greenhouse root + core sub-component):
 
 ```
-COMPONENT                                                               VERSION   PROVIDER
-github.com/cloudoperators/greenhouse                                    0.23.0    ...
-github.com/cloudoperators/greenhouse/core                               0.23.0    ...
-github.com/cloudoperators/greenhouse/prerequisites/cert-manager         0.23.0    ...
-github.com/cloudoperators/greenhouse/prerequisites/flux                 0.23.0    ...
-github.com/cloudoperators/greenhouse/prerequisites/kro                  0.23.0    ...
-github.com/cloudoperators/greenhouse/prerequisites/ocm-controller       0.23.0    ...
+REFERENCEPATH                               COMPONENT                                 VERSION PROVIDER
+                                            github.com/cloudoperators/greenhouse      0.23.0  cloudoperators
+github.com/cloudoperators/greenhouse:0.23.0 github.com/cloudoperators/greenhouse/core 0.23.0  cloudoperators
 ```
 
-<!-- SCREENSHOT: terminal output of `ocm get componentversions --recursive` against RBSC showing all 6 components -->
+<!-- SCREENSHOT: terminal output of `ocm get componentversions --recursive` for greenhouse in RBSC showing greenhouse + core -->
+
+Verify the prerequisites bundle in RBSC (separate root component):
+
+```bash
+ocm get componentversions \
+  "oci://ghcr.io/sofiyadesaisap/greenhouse-rbsc//github.com/cloudoperators/greenhouse-prerequisites:0.33.0" \
+  --recursive
+```
+
+Expected output — 5 components (prerequisites root + cert-manager, flux, kro, ocm-controller):
+
+```
+REFERENCEPATH                                                     COMPONENT                                                         VERSION PROVIDER
+                                                                  github.com/cloudoperators/greenhouse-prerequisites                0.33.0  cloudoperators
+github.com/cloudoperators/greenhouse-prerequisites:0.33.0         github.com/cloudoperators/greenhouse/prerequisites/cert-manager   1.20.1  cloudoperators
+github.com/cloudoperators/greenhouse-prerequisites:0.33.0         github.com/cloudoperators/greenhouse/prerequisites/flux           2.15.0  cloudoperators
+github.com/cloudoperators/greenhouse-prerequisites:0.33.0         github.com/cloudoperators/greenhouse/prerequisites/kro            0.9.4   cloudoperators
+github.com/cloudoperators/greenhouse-prerequisites:0.33.0         github.com/cloudoperators/greenhouse/prerequisites/ocm-controller 0.33.0  cloudoperators
+```
+
+<!-- SCREENSHOT: terminal output of `ocm get componentversions --recursive` for greenhouse-prerequisites in RBSC showing all 5 components -->
 
 ---
 
