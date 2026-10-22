@@ -266,7 +266,8 @@ Release "kro" does not exist. Installing it now.
 STATUS: deployed
 ```
 
-<!-- SCREENSHOT: terminal showing kro helm install success and `kubectl get pods -n kro-system` with kro pod Running -->
+<img width="454" height="46" alt="image" src="https://github.com/user-attachments/assets/4f69cc9a-e795-4df3-b50b-17e232665f52" />
+
 
 ### Step 3 — Grant helm-controller RBAC
 
@@ -300,7 +301,8 @@ namespace/greenhouse configured
 secret/greenhouse-ocm-registry-creds configured
 ```
 
-<!-- SCREENSHOT: terminal showing namespace + secret created/configured -->
+<img width="676" height="90" alt="image" src="https://github.com/user-attachments/assets/6a19b88a-962e-4b40-bc95-1454a51e5c3c" />
+
 
 ### Step 5 — Apply kro RGDs
 
