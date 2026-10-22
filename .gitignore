@@ -44,7 +44,9 @@ dist/**
 .DS_Store
 
 # e2e local cluster kubeconfig files
-test/e2e/local-cluster/*.kubeconfig
+ocm/pre-demo-reading.md
+ocmgreen-kubeconfig.yaml
+kubeconfig-for-shoot.yaml
 
 # act artifacts needed for testing workflows
 .secrets

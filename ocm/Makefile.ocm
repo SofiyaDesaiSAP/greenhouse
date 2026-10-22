@@ -1,5 +1,5 @@
-GREENHOUSE_VERSION        ?= 0.16.1
-GREENHOUSE_IMAGE_REF      ?= ghcr.io/cloudoperators/greenhouse:v$(GREENHOUSE_VERSION)
+GREENHOUSE_VERSION        ?= 0.23.0
+GREENHOUSE_IMAGE_REF      ?= ghcr.io/cloudoperators/greenhouse:v0.18.0
 DASHBOARD_IMAGE_REF       ?= ghcr.io/cloudoperators/juno-app-greenhouse@sha256:ae366951d37198d05d6b3d5859dec8181530d380ea7b9a8a8cfc5a8f07937631
 CERT_MANAGER_VERSION      ?= 1.20.1
 FLUX_VERSION              ?= 2.15.0
@@ -38,7 +38,8 @@ RBSC_REGISTRY      ?= ghcr.io/sofiyadesaisap/greenhouse-rbsc
 
 KC := KUBECONFIG=$(SHOOT_KUBECONFIG)
 
-.PHONY: all help dep-update build push verify trigger-workflow deploy-apply \
+.PHONY: all help dep-update build build-greenhouse build-prerequisites build-all \
+        push push-prerequisites push-all verify trigger-workflow deploy-apply \
         deploy-instance clean \
         bootstrap-flux install-kro install-cert-manager install-ocm-controller grant-helm-rbac \
         install-prometheus-crds install-flux-extension-stubs \
@@ -47,7 +48,7 @@ KC := KUBECONFIG=$(SHOOT_KUBECONFIG)
         deploy-reconcile deploy-reconcile-ocm deploy-full flux-fix snapshot-urls \
         sign-sigstore verify-sigstore sign-images transfer-rbsc \
         install-kyverno load-sigstore-root \
-        print-image-digests gen-image-allowlist
+        print-image-digests patch-instance gen-image-allowlist
 
 all: help
 
@@ -58,8 +59,10 @@ help:
 	@echo "  make trigger-workflow               - trigger push-ocm-bundle GitHub Actions workflow (recommended)"
 	@echo "  make dep-update     - helm dependency update for greenhouse chart (file:// subcharts)"
 	@echo "                        Run once on a fresh checkout; safe to re-run"
-	@echo "  make build          - build OCM CTF archive (greenhouse-bundle.ctf)"
-	@echo "                        OCM fetches all prereq charts directly from their registries"
+	@echo "  make build          - build combined CTF (greenhouse + prerequisites) — backward compat"
+	@echo "  make build-greenhouse    - build product-only CTF (greenhouse-component.yaml)"
+	@echo "  make build-prerequisites - build ops CTF (greenhouse-prerequisites-component.yaml)"
+	@echo "  make build-all           - build both CTFs sequentially"
 	@echo "  make push           - push CTF to OCM_REGISTRY=$(OCM_REGISTRY)"
 	@echo "  make verify         - inspect component versions in local archive"
 	@echo ""
@@ -68,6 +71,7 @@ help:
 	@echo "  make verify-sigstore  - verify OCM signature (THE air-gap gate; run before transfer)"
 	@echo "── Admission Option 1 (digest allowlist — see discussion §6) ─────────"
 	@echo "  make print-image-digests - show OCM-signed image digests (fill instance.yaml)"
+	@echo "  make patch-instance      - auto-update instance.yaml digests from RBSC (run after transfer-rbsc)"
 	@echo "  make gen-image-allowlist - generate the Kyverno allowlist ConfigMap from the bundle"
 	@echo "  make install-kyverno     - install Kyverno + apply the digest-allowlist policy"
 	@echo "── Optional (per-image cosign — only if you own/re-host images) ──────"
@@ -147,6 +151,34 @@ build:
 	  KRO_VERSION=$(KRO_VERSION) \
 	  OCM_CONTROLLER_VERSION=$(OCM_CONTROLLER_VERSION)
 
+# Build greenhouse product component only (open-source, no prerequisites).
+build-greenhouse:
+	rm -rf greenhouse-bundle.ctf
+	ocm add componentversions \
+	  --addenv \
+	  --file greenhouse-bundle.ctf \
+	  --create \
+	  greenhouse-component.yaml \
+	  GREENHOUSE_VERSION=$(GREENHOUSE_VERSION) \
+	  "GREENHOUSE_IMAGE_REF=$(GREENHOUSE_IMAGE_REF)" \
+	  "DASHBOARD_IMAGE_REF=$(DASHBOARD_IMAGE_REF)"
+
+# Build prerequisites component only (cert-manager, flux, kro, ocm-controller).
+build-prerequisites:
+	rm -rf greenhouse-prerequisites-bundle.ctf
+	ocm add componentversions \
+	  --addenv \
+	  --file greenhouse-prerequisites-bundle.ctf \
+	  --create \
+	  greenhouse-prerequisites-component.yaml \
+	  CERT_MANAGER_VERSION=$(CERT_MANAGER_VERSION) \
+	  FLUX_VERSION=$(FLUX_VERSION) \
+	  KRO_VERSION=$(KRO_VERSION) \
+	  OCM_CONTROLLER_VERSION=$(OCM_CONTROLLER_VERSION)
+
+# Build both CTFs sequentially.
+build-all: build-greenhouse build-prerequisites
+
 # -----------------------------------------------------------------------
 # Step 3: push CTF to OCM registry
 # Note: OCM v0.48 uses GITHUB_TOKEN env var for ghcr.io auth (not ~/.ocmconfig).
@@ -158,6 +190,15 @@ push: greenhouse-bundle.ctf
 	  --copy-resources \
 	  greenhouse-bundle.ctf \
 	  oci://$(OCM_REGISTRY)
+
+push-prerequisites: greenhouse-prerequisites-bundle.ctf
+	GITHUB_TOKEN=$(GITHUB_TOKEN) ocm transfer ctf \
+	  --overwrite \
+	  --copy-resources \
+	  greenhouse-prerequisites-bundle.ctf \
+	  oci://$(OCM_REGISTRY)
+
+push-all: push push-prerequisites
 
 # -----------------------------------------------------------------------
 # Trigger the push-ocm-bundle GitHub Actions workflow (recommended for CI).
@@ -260,6 +301,28 @@ print-image-digests:
 	  "$$(echo '$(ALLOWLIST_SRC)' | sed 's,.*//,,')" -o json 2>/dev/null \
 	  | jq -r '.items[].element | select(.type=="ociImage") | "  " + .access.imageReference + "  ->  sha256:" + .digest.value' \
 	  || echo "  (no bundle found — run 'make build' first, or set ALLOWLIST_SRC)"
+
+# Auto-patch deploy/instance.yaml with the correct image digests from the RBSC.
+# Run this after 'make transfer-rbsc' whenever the greenhouse version changes.
+# Reads digests from the RBSC component descriptor (not the local CTF) so the
+# cluster and the registry are always in sync.
+# Requires: yq v4+ (https://github.com/mikefarah/yq)
+patch-instance:
+	@echo "Reading image digests from RBSC for github.com/cloudoperators/greenhouse/core:$(GREENHOUSE_VERSION)..."
+	$(eval DIGESTS_JSON := $(shell ocm get resources \
+	  "oci://$(RBSC_REGISTRY)//github.com/cloudoperators/greenhouse/core:$(GREENHOUSE_VERSION)" \
+	  -o json 2>/dev/null))
+	$(eval GH_DIGEST := $(shell echo '$(DIGESTS_JSON)' | \
+	  jq -r '.items[].element | select(.name=="greenhouse-image") | "sha256:" + .digest.value' 2>/dev/null))
+	$(eval DB_DIGEST := $(shell echo '$(DIGESTS_JSON)' | \
+	  jq -r '.items[].element | select(.name=="dashboard-image") | "sha256:" + .digest.value' 2>/dev/null))
+	@test -n "$(GH_DIGEST)" || (echo "ERROR: could not read greenhouse-image digest from RBSC. Run 'make transfer-rbsc' first."; exit 1)
+	@test -n "$(DB_DIGEST)" || (echo "ERROR: could not read dashboard-image digest from RBSC."; exit 1)
+	@echo "  greenhouse-image: $(GH_DIGEST)"
+	@echo "  dashboard-image:  $(DB_DIGEST)"
+	yq -i '.spec.greenhouseImageDigest = "$(GH_DIGEST)"' deploy/instance.yaml
+	yq -i '.spec.dashboardImageDigest  = "$(DB_DIGEST)"'  deploy/instance.yaml
+	@echo "deploy/instance.yaml updated. Apply with: make deploy-instance"
 
 # Generate the Kyverno allowed-digest ConfigMap from the signed bundle.
 # Only ociImage resources are included (that is what pods actually run).

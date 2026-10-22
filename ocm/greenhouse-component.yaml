@@ -1,0 +1,76 @@
+# yaml-language-server: $schema=https://ocm.software/latest/schemas/bindings/go/constructor/schema-2020-12.json
+#
+# OCM Component Descriptor — Greenhouse product only (open-source)
+#
+# Contains only the greenhouse stack: chart, images, and the kro RGD.
+# Does NOT bundle prerequisites (cert-manager, flux, kro, ocm-controller).
+# For the ops/air-gapped prerequisites bundle use greenhouse-prerequisites-component.yaml.
+#
+# Variables:
+#   GREENHOUSE_VERSION    - greenhouse app version, e.g. 0.23.0
+#   GREENHOUSE_IMAGE_REF  - full image ref, e.g. ghcr.io/cloudoperators/greenhouse:v0.23.0
+#   DASHBOARD_IMAGE_REF   - full image ref, e.g. ghcr.io/cloudoperators/juno-app-greenhouse@sha256:<digest>
+#
+# Build:
+#   make -f Makefile.ocm build-greenhouse
+
+components:
+
+  # -------------------------------------------------------------------------
+  # Greenhouse core (chart + images + kro RGD)
+  # -------------------------------------------------------------------------
+  - name: github.com/cloudoperators/greenhouse/core
+    version: ${GREENHOUSE_VERSION}
+    provider:
+      name: cloudoperators
+    labels:
+      - name: cloudoperators.github.com/role
+        value: core
+    resources:
+
+      # Greenhouse umbrella chart (bundles manager, idproxy, cors-proxy, authz, dashboard subcharts)
+      - name: greenhouse-chart
+        type: helmChart
+        version: ${GREENHOUSE_VERSION}
+        input:
+          type: helm
+          path: ../charts/greenhouse
+          version: ${GREENHOUSE_VERSION}
+
+      # Single image used by controller-manager, idproxy, cors-proxy, and authz subcharts
+      - name: greenhouse-image
+        type: ociImage
+        version: ${GREENHOUSE_VERSION}
+        access:
+          type: OCIImage/v1
+          imageReference: ${GREENHOUSE_IMAGE_REF}
+
+      # Dashboard UI image (separate from the main greenhouse binary)
+      - name: dashboard-image
+        type: ociImage
+        version: ${GREENHOUSE_VERSION}
+        access:
+          type: OCIImage/v1
+          imageReference: ${DASHBOARD_IMAGE_REF}
+
+      # kro-rgd: the GreenhouseStack ResourceGraphDefinition shipped as an OCM artifact.
+      - name: kro-rgd
+        type: blob
+        version: ${GREENHOUSE_VERSION}
+        input:
+          type: file
+          path: deploy/kro-rgd.yaml
+          mediaType: application/yaml
+          compress: false
+
+  # -------------------------------------------------------------------------
+  # Top-level product component — references core only
+  # -------------------------------------------------------------------------
+  - name: github.com/cloudoperators/greenhouse
+    version: ${GREENHOUSE_VERSION}
+    provider:
+      name: cloudoperators
+    componentReferences:
+      - name: core
+        componentName: github.com/cloudoperators/greenhouse/core
+        version: ${GREENHOUSE_VERSION}

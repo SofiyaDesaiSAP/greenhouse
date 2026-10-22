@@ -1,0 +1,130 @@
+# yaml-language-server: $schema=https://ocm.software/latest/schemas/bindings/go/constructor/schema-2020-12.json
+#
+# OCM Component Descriptor — Greenhouse prerequisites (ops/air-gapped, opt-in)
+#
+# Contains cert-manager, flux, kro, and ocm-controller as separate OCM components,
+# bundled under a single github.com/cloudoperators/greenhouse-prerequisites root.
+#
+# This bundle is intentionally separate from the greenhouse product component so that
+# consumers who already manage prerequisites through other means (e.g. their own Flux
+# setup, existing cert-manager installation) are not forced to use this bundle.
+#
+# For the open-source greenhouse product see greenhouse-component.yaml.
+#
+# Variables:
+#   CERT_MANAGER_VERSION      - e.g. 1.20.1
+#   FLUX_VERSION              - e.g. 2.15.0
+#   KRO_VERSION               - e.g. 0.9.4
+#   OCM_CONTROLLER_VERSION    - e.g. 0.33.0  (no v-prefix; imageReference tag uses v-prefix)
+#
+# Build:
+#   make -f Makefile.ocm build-prerequisites
+
+components:
+
+  # -------------------------------------------------------------------------
+  # Prerequisite: cert-manager
+  # Uses access.type: ociArtifact so that `ocm transfer --copy-resources` copies
+  # the chart blob to the RBSC at the original OCI path:
+  #   ghcr.io/cloudoperators/greenhouse-extensions/charts/cert-manager:${CERT_MANAGER_VERSION}
+  #   → <rbsc>/cloudoperators/greenhouse-extensions/charts/cert-manager:${CERT_MANAGER_VERSION}
+  # This makes the chart directly consumable by Flux OCIRepository at the RBSC path,
+  # enabling fully air-gapped bootstrap via the GreenhouseBootstrap RGD.
+  # -------------------------------------------------------------------------
+  - name: github.com/cloudoperators/greenhouse/prerequisites/cert-manager
+    version: ${CERT_MANAGER_VERSION}
+    provider:
+      name: cloudoperators
+    labels:
+      - name: cloudoperators.github.com/role
+        value: prerequisite
+    resources:
+      - name: cert-manager-chart
+        type: helmChart
+        version: ${CERT_MANAGER_VERSION}
+        access:
+          type: ociArtifact
+          imageReference: ghcr.io/cloudoperators/greenhouse-extensions/charts/cert-manager:${CERT_MANAGER_VERSION}
+
+  # -------------------------------------------------------------------------
+  # Prerequisite: flux2 (official install manifests)
+  # access type wget = external reference stored in CTF descriptor.
+  # The manifest is downloaded and embedded as an OCI blob during transfer.
+  # -------------------------------------------------------------------------
+  - name: github.com/cloudoperators/greenhouse/prerequisites/flux
+    version: ${FLUX_VERSION}
+    provider:
+      name: cloudoperators
+    labels:
+      - name: cloudoperators.github.com/role
+        value: prerequisite
+    resources:
+      - name: flux-install
+        type: blob
+        version: ${FLUX_VERSION}
+        access:
+          type: wget
+          url: https://github.com/fluxcd/flux2/releases/download/v${FLUX_VERSION}/install.yaml
+          mediaType: application/yaml
+
+  # -------------------------------------------------------------------------
+  # Prerequisite: kro (Kubernetes Resource Orchestrator)
+  # -------------------------------------------------------------------------
+  - name: github.com/cloudoperators/greenhouse/prerequisites/kro
+    version: ${KRO_VERSION}
+    provider:
+      name: cloudoperators
+    labels:
+      - name: cloudoperators.github.com/role
+        value: prerequisite
+    resources:
+      - name: kro-chart
+        type: helmChart
+        version: ${KRO_VERSION}
+        input:
+          type: helm
+          path: kro
+          helmRepository: oci://registry.k8s.io/kro/charts
+          version: ${KRO_VERSION}
+
+  # -------------------------------------------------------------------------
+  # Prerequisite: ocm-controller
+  # Uses access.type: ociArtifact — --copy-resources copies the chart to the RBSC
+  # at the original OCI path for direct Flux consumption (air-gapped bootstrap).
+  # Resource version uses no v-prefix; imageReference tag uses v-prefix (OCI convention).
+  # -------------------------------------------------------------------------
+  - name: github.com/cloudoperators/greenhouse/prerequisites/ocm-controller
+    version: ${OCM_CONTROLLER_VERSION}
+    provider:
+      name: cloudoperators
+    labels:
+      - name: cloudoperators.github.com/role
+        value: prerequisite
+    resources:
+      - name: ocm-controller-chart
+        type: helmChart
+        version: ${OCM_CONTROLLER_VERSION}
+        access:
+          type: ociArtifact
+          imageReference: ghcr.io/open-component-model/helm/ocm-controller:v${OCM_CONTROLLER_VERSION}
+
+  # -------------------------------------------------------------------------
+  # Top-level prerequisites bundle — references all 4 prerequisites
+  # -------------------------------------------------------------------------
+  - name: github.com/cloudoperators/greenhouse-prerequisites
+    version: ${OCM_CONTROLLER_VERSION}
+    provider:
+      name: cloudoperators
+    componentReferences:
+      - name: cert-manager
+        componentName: github.com/cloudoperators/greenhouse/prerequisites/cert-manager
+        version: ${CERT_MANAGER_VERSION}
+      - name: flux
+        componentName: github.com/cloudoperators/greenhouse/prerequisites/flux
+        version: ${FLUX_VERSION}
+      - name: kro
+        componentName: github.com/cloudoperators/greenhouse/prerequisites/kro
+        version: ${KRO_VERSION}
+      - name: ocm-controller
+        componentName: github.com/cloudoperators/greenhouse/prerequisites/ocm-controller
+        version: ${OCM_CONTROLLER_VERSION}

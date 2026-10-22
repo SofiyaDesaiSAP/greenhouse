@@ -1,20 +1,26 @@
 # kro ResourceGraphDefinition for Greenhouse Bootstrap
 #
-# Installs cluster prerequisites (cert-manager, prometheus-operator CRDs, OCM controller)
-# via kro + Flux, pulling charts from the on-site RBSC registry.
+# Installs cluster prerequisites (Flux, kro, cert-manager, prometheus-operator CRDs,
+# OCM controller) via kro + Flux, pulling charts from the on-site RBSC registry
+# or public OCI where noted.
 #
 # After `ocm transfer --copy-resources --recursive`, the RBSC holds Helm chart blobs at
 # paths derived from OCM's path-preservation rule (source registry host is stripped):
 #   cert-manager:    oci://<rbsc>/cloudoperators/greenhouse-extensions/charts/cert-manager
 #   ocm-controller:  oci://<rbsc>/open-component-model/helm/ocm-controller
 #
-# prometheus-operator-crds is the one exception — it is NOT in the OCM bundle (greenhouse
-# unconditionally creates PrometheusRule resources, but prometheus-crds is not an OCM
-# component). It always pulls from public OCI. Document this clearly in the demo.
+# prometheus-operator-crds is NOT in the OCM bundle (greenhouse unconditionally creates
+# PrometheusRule resources, but prometheus-crds is not an OCM component).
+# kro and Flux pull from their public OCI registries.
 #
 # Applied via kustomize (deploy/kustomization.yaml).
 # When kro processes this RGD it registers the GreenhouseBootstrap CRD.
 # Apply the instance separately: kubectl apply -f deploy/bootstrap-instance.yaml
+#
+# Bootstrapping constraint: Flux must exist before any HelmRelease reconciles,
+# and kro must exist before this RGD can be processed. enableFlux: true and
+# enableKro: true therefore require those components to already be present.
+# These flags are most useful as false (skip re-installing something already there).
 #
 # Schema uses kro v0.9.x SimpleSchema syntax (inline type strings, not {type: string}).
 # Status fields use CEL expressions projecting from managed HelmRelease conditions.
@@ -36,19 +42,27 @@ spec:
       # prometheus-operator-crds is NOT in the OCM bundle — pulls from public OCI.
       prometheusCrdsVersion: "string"
       ocmControllerVersion: "string"
-      # Set any of these to false to skip installing a prerequisite that already
-      # exists in the cluster (e.g. when OCM/Flux are pre-installed).
-      installCertManager: "boolean"
-      installOcmController: "boolean"
+      kroVersion: "string"
+      fluxVersion: "string"
+      # Master switch — set false to suspend ALL components (overrides per-component flags).
+      installPrerequisites: "boolean"
+      # Per-component flags — set false to skip a component already present in the cluster.
+      # When false, the OCIRepository and HelmRelease are created but immediately suspended.
+      installCertManager:    "boolean"
+      installOcmController:  "boolean"
       installPrometheusCrds: "boolean"
+      # enableKro / enableFlux: most useful as false (skip re-installing existing installs).
+      # See bootstrapping constraint in file header before setting true.
+      enableKro:  "boolean"
+      enableFlux: "boolean"
 
     status:
-      certManagerReady: "${certManagerHR.status.conditions[0].status}"
+      certManagerReady:  "${certManagerHR.status.conditions[0].status}"
       ocmControllerReady: "${ocmControllerHR.status.conditions[0].status}"
 
   resources:
 
-    # ── prometheus-operator CRDs ─────────────────────────────────────────────
+    # ── prometheus-operator CRDs ─────────────────────────────────────────
     # Not in the OCM bundle; pulled from public OCI.
     # Required because the greenhouse chart creates PrometheusRule resources
     # unconditionally — without this CRD the greenhouse HelmRelease fails.
@@ -61,7 +75,7 @@ spec:
           namespace: greenhouse
         spec:
           interval: 10m
-          suspend: ${!schema.spec.installPrometheusCrds}
+          suspend: ${!(schema.spec.installPrerequisites && schema.spec.installPrometheusCrds)}
           url: "oci://ghcr.io/prometheus-community/charts/prometheus-operator-crds"
           ref:
             tag: "${schema.spec.prometheusCrdsVersion}"
@@ -75,7 +89,7 @@ spec:
           namespace: greenhouse
         spec:
           interval: 10m
-          suspend: ${!schema.spec.installPrometheusCrds}
+          suspend: ${!(schema.spec.installPrerequisites && schema.spec.installPrometheusCrds)}
           targetNamespace: monitoring
           install:
             createNamespace: true
@@ -84,7 +98,7 @@ spec:
             name: prometheus-crds-bootstrap
             namespace: greenhouse
 
-    # ── cert-manager ─────────────────────────────────────────────────────────
+    # ── cert-manager ─────────────────────────────────────────────────────
     # Pulled from the RBSC. Path derived from component-constructor.yaml:
     #   access.type: ociArtifact
     #   imageReference: ghcr.io/cloudoperators/greenhouse-extensions/charts/cert-manager:${version}
@@ -99,7 +113,7 @@ spec:
           namespace: greenhouse
         spec:
           interval: 10m
-          suspend: ${!schema.spec.installCertManager}
+          suspend: ${!(schema.spec.installPrerequisites && schema.spec.installCertManager)}
           url: "oci://${schema.spec.rbscRegistry}/cloudoperators/greenhouse-extensions/charts/cert-manager"
           ref:
             tag: "${schema.spec.certManagerVersion}"
@@ -115,7 +129,7 @@ spec:
           namespace: greenhouse
         spec:
           interval: 10m
-          suspend: ${!schema.spec.installCertManager}
+          suspend: ${!(schema.spec.installPrerequisites && schema.spec.installCertManager)}
           targetNamespace: cert-manager
           install:
             createNamespace: true
@@ -129,7 +143,7 @@ spec:
           values:
             installCRDs: true
 
-    # ── OCM controller ────────────────────────────────────────────────────────
+    # ── OCM controller ────────────────────────────────────────────────────
     # Pulled from the RBSC. Path derived from component-constructor.yaml:
     #   access.type: ociArtifact
     #   imageReference: ghcr.io/open-component-model/helm/ocm-controller:v${version}
@@ -147,7 +161,7 @@ spec:
           namespace: greenhouse
         spec:
           interval: 10m
-          suspend: ${!schema.spec.installOcmController}
+          suspend: ${!(schema.spec.installPrerequisites && schema.spec.installOcmController)}
           url: "oci://${schema.spec.rbscRegistry}/open-component-model/helm/ocm-controller"
           ref:
             tag: "v${schema.spec.ocmControllerVersion}"
@@ -163,11 +177,11 @@ spec:
           namespace: greenhouse
         spec:
           interval: 10m
-          suspend: ${!schema.spec.installOcmController}
+          suspend: ${!(schema.spec.installPrerequisites && schema.spec.installOcmController)}
           targetNamespace: ocm-system
           install:
             createNamespace: true
-          dependsOn: ${schema.spec.installCertManager ? [{"name":"cert-manager","namespace":"greenhouse"}] : []}
+          dependsOn: '${schema.spec.installCertManager ? [{"name":"cert-manager","namespace":"greenhouse"}] : []}'
           chartRef:
             kind: OCIRepository
             name: ocm-controller-bootstrap
@@ -175,3 +189,73 @@ spec:
           values:
             tlsCert:
               generateTlsCert: true
+
+    # ── kro ───────────────────────────────────────────────────────────────
+    # Pulled from public OCI (registry.k8s.io).
+    # See bootstrapping constraint in file header before setting enableKro: true.
+    - id: kroOCIRepo
+      template:
+        apiVersion: source.toolkit.fluxcd.io/v1
+        kind: OCIRepository
+        metadata:
+          name: kro-bootstrap
+          namespace: greenhouse
+        spec:
+          interval: 10m
+          suspend: ${!(schema.spec.installPrerequisites && schema.spec.enableKro)}
+          url: "oci://registry.k8s.io/kro/charts/kro"
+          ref:
+            tag: "${schema.spec.kroVersion}"
+
+    - id: kroHR
+      template:
+        apiVersion: helm.toolkit.fluxcd.io/v2
+        kind: HelmRelease
+        metadata:
+          name: kro
+          namespace: greenhouse
+        spec:
+          interval: 10m
+          suspend: ${!(schema.spec.installPrerequisites && schema.spec.enableKro)}
+          targetNamespace: kro-system
+          install:
+            createNamespace: true
+          chartRef:
+            kind: OCIRepository
+            name: kro-bootstrap
+            namespace: greenhouse
+
+    # ── Flux ──────────────────────────────────────────────────────────────
+    # Pulled from public OCI (ghcr.io/fluxcd-community/charts/flux2).
+    # See bootstrapping constraint in file header before setting enableFlux: true.
+    - id: fluxOCIRepo
+      template:
+        apiVersion: source.toolkit.fluxcd.io/v1
+        kind: OCIRepository
+        metadata:
+          name: flux-bootstrap
+          namespace: greenhouse
+        spec:
+          interval: 10m
+          suspend: ${!(schema.spec.installPrerequisites && schema.spec.enableFlux)}
+          url: "oci://ghcr.io/fluxcd-community/charts/flux2"
+          ref:
+            tag: "${schema.spec.fluxVersion}"
+
+    - id: fluxHR
+      template:
+        apiVersion: helm.toolkit.fluxcd.io/v2
+        kind: HelmRelease
+        metadata:
+          name: flux
+          namespace: greenhouse
+        spec:
+          interval: 10m
+          suspend: ${!(schema.spec.installPrerequisites && schema.spec.enableFlux)}
+          targetNamespace: flux-system
+          install:
+            createNamespace: true
+          chartRef:
+            kind: OCIRepository
+            name: flux-bootstrap
+            namespace: greenhouse

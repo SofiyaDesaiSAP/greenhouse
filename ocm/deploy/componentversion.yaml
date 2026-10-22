@@ -1,10 +1,11 @@
-# ComponentVersion watches the OCM registry for the greenhouse product component.
-# It resolves the version constraint and makes all bundled components accessible
-# to Resource objects via referencePath navigation.
+# DEPRECATED — superseded by the ComponentVersion resource in ocm/deploy/kro-rgd.yaml.
+# The kro RGD now manages ComponentVersion directly, so applying this file separately
+# would create a duplicate CR and conflict with kro-owned state.
+# Retained for reference only; do NOT include in kustomization.yaml.
 #
-# Prerequisites:
-#   - Secret: greenhouse-ocm-registry-creds (see namespace.yaml)
-#   - OCM bundle pushed: make -f ocm/Makefile.ocm push GITHUB_TOKEN=<pat>
+# OCM ComponentVersion — previously applied via kustomize (deploy/kustomization.yaml).
+# Watches the RBSC registry for the greenhouse product component and resolves
+# the semver constraint to the latest matching version.
 apiVersion: delivery.ocm.software/v1alpha1
 kind: ComponentVersion
 metadata:
@@ -14,7 +15,7 @@ spec:
   interval: 10m
   component: github.com/cloudoperators/greenhouse
   version:
-    semver: ">=0.23.0"
+    semver: ">=0.18.0"
   repository:
     url: ghcr.io/sofiyadesaisap/greenhouse-rbsc
     secretRef:

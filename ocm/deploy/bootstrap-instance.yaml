@@ -5,10 +5,7 @@
 #   kubectl get crd greenhousebootstraps.kro.run   # wait for this
 #   kubectl apply -f deploy/bootstrap-instance.yaml
 #
-# kro expands this into OCIRepositories + HelmReleases that install:
-#   - prometheus-operator CRDs  (public OCI — not in OCM bundle, noted exception)
-#   - cert-manager              (from RBSC: <rbscRegistry>/cloudoperators/greenhouse-extensions/charts/cert-manager)
-#   - OCM controller            (from RBSC: <rbscRegistry>/open-component-model/helm/ocm-controller)
+# kro expands this into OCIRepositories + HelmReleases.
 #
 # The RBSC registry secret (registrySecretName) must exist in the greenhouse namespace
 # before this instance is applied. Create it during bootstrap preparation:
@@ -18,7 +15,7 @@
 #     --docker-password=<GITHUB_TOKEN> \
 #     -n greenhouse
 #
-# After all three HelmReleases are Ready, copy the OCM TLS secret and proceed
+# After all required HelmReleases are Ready, copy the OCM TLS secret and proceed
 # to the main deploy: kubectl apply -f deploy/instance.yaml
 apiVersion: kro.run/v1alpha1
 kind: GreenhouseBootstrap
@@ -31,9 +28,20 @@ spec:
   certManagerVersion: "1.20.1"
   prometheusCrdsVersion: "14.0.0"
   ocmControllerVersion: "0.33.0"
-  # Set any of these to false to skip installing a prerequisite that already
-  # exists in the cluster (e.g. when deploying greenhouse-only alongside an
-  # existing OCM/cert-manager installation).
-  installCertManager: true
-  installOcmController: true
+  kroVersion: "0.9.4"
+  fluxVersion: "2.5.1"
+
+  # Master switch — false suspends ALL prerequisite components regardless of per-component flags.
+  installPrerequisites: true
+
+  # Per-component flags — false suspends that component's OCIRepository + HelmRelease.
+  # Use when the component is already installed and managed outside this bootstrap.
+  installCertManager:    true
+  installOcmController:  true
   installPrometheusCrds: true
+
+  # Flux and kro are typically pre-installed manually (they must exist before this RGD
+  # is processed). Set true only if they are NOT already present — see bootstrapping
+  # constraint in bootstrap-rgd.yaml header.
+  enableKro:  false
+  enableFlux: false

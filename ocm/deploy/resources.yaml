@@ -1,69 +1,12 @@
-# Resource objects extract individual Helm charts from the greenhouse OCM bundle.
-# The OCM controller creates a Snapshot OCI artifact for each Resource.
+# DEPRECATED — superseded by the FluxDeployer resource in ocm/deploy/kro-rgd.yaml.
+# The kro RGD's FluxDeployer navigates ComponentVersion → Resource → Snapshot
+# automatically via sourceRef.resourceRef + referencePath, so no separate
+# Resource CR is needed. Applying this file would create a duplicate CR.
+# Retained for reference only; do NOT include in kustomization.yaml.
 #
-# referencePath navigates the componentReference tree:
-#   greenhouse (top-level)
-#     └─ core            → greenhouse-chart, kro-rgd
-#     └─ cert-manager    → cert-manager-chart
-#     └─ kro             → kro-chart
-#     └─ ocm-controller  → ocm-controller-chart
-#
-# greenhouse-stack-rgd holds the kro ResourceGraphDefinition YAML.
-# The Deployer in graph-deployer.yaml applies it directly (no Helm HelmRelease).
-# kro processes the RGD → creates GreenhouseStack CRD → apply instance.yaml.
-
-# ---- cert-manager ----
-apiVersion: delivery.ocm.software/v1alpha1
-kind: Resource
-metadata:
-  name: cert-manager-chart
-  namespace: greenhouse
-spec:
-  interval: 10m
-  sourceRef:
-    kind: ComponentVersion
-    name: greenhouse
-    namespace: greenhouse
-    resourceRef:
-      name: cert-manager-chart
-      referencePath:
-        - name: cert-manager
----
-# ---- kro ----
-apiVersion: delivery.ocm.software/v1alpha1
-kind: Resource
-metadata:
-  name: kro-chart
-  namespace: greenhouse
-spec:
-  interval: 10m
-  sourceRef:
-    kind: ComponentVersion
-    name: greenhouse
-    namespace: greenhouse
-    resourceRef:
-      name: kro-chart
-      referencePath:
-        - name: kro
----
-# ---- ocm-controller ----
-apiVersion: delivery.ocm.software/v1alpha1
-kind: Resource
-metadata:
-  name: ocm-controller-chart
-  namespace: greenhouse
-spec:
-  interval: 10m
-  sourceRef:
-    kind: ComponentVersion
-    name: greenhouse
-    namespace: greenhouse
-    resourceRef:
-      name: ocm-controller-chart
-      referencePath:
-        - name: ocm-controller
----
-# ---- greenhouse core chart ----
+# OCM Resource — previously applied via kustomize (deploy/kustomization.yaml).
+# Extracts the greenhouse-chart artifact from the ComponentVersion and creates
+# a Snapshot in the in-cluster OCM registry for Flux to consume.
 apiVersion: delivery.ocm.software/v1alpha1
 kind: Resource
 metadata:
@@ -72,27 +15,11 @@ metadata:
 spec:
   interval: 10m
   sourceRef:
+    apiVersion: delivery.ocm.software/v1alpha1
     kind: ComponentVersion
     name: greenhouse
     namespace: greenhouse
-    resourceRef:
-      name: greenhouse-chart
-      referencePath:
-        - name: core
----
-# ---- greenhouse-stack kro RGD (plain YAML, applied by Deployer) ----
-apiVersion: delivery.ocm.software/v1alpha1
-kind: Resource
-metadata:
-  name: greenhouse-stack-rgd
-  namespace: greenhouse
-spec:
-  interval: 10m
-  sourceRef:
-    kind: ComponentVersion
-    name: greenhouse
-    namespace: greenhouse
-    resourceRef:
-      name: kro-rgd
-      referencePath:
-        - name: core
+  resource:
+    name: greenhouse-chart
+  referencePath:
+    - name: core

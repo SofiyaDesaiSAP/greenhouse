@@ -1,6 +1,12 @@
 # yaml-language-server: $schema=https://ocm.software/latest/schemas/bindings/go/constructor/schema-2020-12.json
 #
-# OCM Component Descriptor for Greenhouse
+# DEPRECATED: This file bundles greenhouse + all prerequisites into one component.
+# Use the split files instead:
+#   greenhouse-component.yaml               — product only (open-source)
+#   greenhouse-prerequisites-component.yaml — ops/air-gapped prerequisites (opt-in)
+# Retained here for backward-compatible single-bundle builds (make build).
+#
+# OCM Component Descriptor for Greenhouse (combined bundle)
 #
 # Variables (set via env or make):
 #   GREENHOUSE_VERSION        - greenhouse app version, e.g. 0.16.1

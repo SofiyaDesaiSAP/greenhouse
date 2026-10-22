@@ -4,31 +4,30 @@
 # Apply with: make -f Makefile.ocm deploy-instance
 # (waits for CRD readiness automatically)
 #
-# To upgrade: update snapshot paths + versions here, then re-apply.
-# Run `make snapshot-urls` to get current sha values from the live cluster.
+# The FluxDeployer in the kro RGD watches the ComponentVersion, navigates to
+# the greenhouse-chart resource in the core sub-component, and wires the
+# OCIRepository URL from the Snapshot automatically — no manual snapshot-URL step.
+# Updating to a new greenhouse version: bump componentVersion and image digests only.
 apiVersion: kro.run/v1alpha1
 kind: GreenhouseStack
 metadata:
   name: greenhouse
   namespace: greenhouse
 spec:
-  registryHost: "registry.ocm-system.svc.cluster.local:5000"
   imageRegistry: "ghcr.io/sofiyadesaisap/greenhouse-rbsc"
-
-  certManagerSnapshotPath: "sha-15031618658884295978"
-  certManagerVersion: "1.20.1"
-
-  ocmControllerSnapshotPath: "sha-3868847230746277828"
-  ocmControllerVersion: "0.33.0"
-
-  greenhouseSnapshotPath: "sha-12147715848810698429"
-  greenhouseVersion: "0.23.0"
+  registrySecretName: "greenhouse-ocm-registry-creds"
+  componentVersion: ">=0.23.0"
 
   # Image content digests from the OCM-signed bundle (Option 1 digest pinning).
   # Get current values with: make -f Makefile.ocm print-image-digests
   # greenhouseImageDigest pins manager/idproxy/cors-proxy/authz (one shared binary image).
-  greenhouseImageDigest: "sha256:0c0cac95a1dafbb9a22d64aaf3cc425e990f2eb9b7863b3e53749e2878472b13"
+  greenhouseImageDigest: "sha256:be2177349a8dbbd58bfb281c81d3181b298f042bd40ae77166e55e848c124afe"
   dashboardImageDigest: "sha256:ae366951d37198d05d6b3d5859dec8181530d380ea7b9a8a8cfc5a8f07937631"
 
-  tlsSecretName: "ocm-registry-tls-certs"
   valuesSecretName: "greenhouse-values"
+
+  # Set false when cert-manager/ocm-controller are not managed via the bootstrap
+  # HelmRelease (e.g. pre-installed in the cluster without a kro GreenhouseBootstrap
+  # instance). greenhouseHR omits the dependsOn entry for suspended/absent HelmReleases.
+  enableCertManager: true
+  enableOcmController: true
