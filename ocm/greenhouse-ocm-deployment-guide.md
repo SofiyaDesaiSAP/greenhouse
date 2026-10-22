@@ -669,7 +669,10 @@ Pods (kro-system):   kro                                              — Runnin
 Pods (flux-system):  helm, source, kustomize, notification            — Running
 ```
 
-<!-- SCREENSHOT: `kubectl get componentversion,resource,fluxdeployer,ocirepository,helmrelease,greenhousestack -n greenhouse` and `kubectl get pods -n greenhouse` all Ready/Running -->
+<img width="1542" height="496" alt="image" src="https://github.com/user-attachments/assets/5343055b-e648-4cad-a740-8edd115f1369" />
+
+
+<img width="673" height="229" alt="image" src="https://github.com/user-attachments/assets/9ca9e9d1-d51a-4d09-8d40-38ff6bf80006" />
 
 
 ### Prove zero external registry dependency
@@ -690,7 +693,8 @@ ghcr.io/sofiyadesaisap/greenhouse-rbsc/cloudoperators/juno-app-greenhouse@sha256
 ghcr.io/sofiyadesaisap/greenhouse-rbsc/sapcc/postgres@sha256:...
 ```
 
-<!-- SCREENSHOT: terminal output showing all pod images prefixed with `ghcr.io/sofiyadesaisap/greenhouse-rbsc/` — no external registries -->
+<img width="971" height="60" alt="image" src="https://github.com/user-attachments/assets/08136fe6-f333-464a-9580-625f2b101d84" />
+
 
 ---
 
