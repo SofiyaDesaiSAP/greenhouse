@@ -206,7 +206,7 @@ REFERENCEPATH                               COMPONENT                           
 github.com/cloudoperators/greenhouse:0.23.0 github.com/cloudoperators/greenhouse/core 0.23.0  cloudoperators
 ```
 
-<!-- SCREENSHOT: terminal output of `ocm get componentversions --recursive` for greenhouse in RBSC showing greenhouse + core -->
+<img width="875" height="87" alt="image" src="https://github.com/user-attachments/assets/5fb5f770-2f28-4aae-a0d8-92ce9053d8f6" />
 
 Verify the prerequisites bundle in RBSC (separate root component):
 
@@ -227,7 +227,8 @@ github.com/cloudoperators/greenhouse-prerequisites:0.33.0         github.com/clo
 github.com/cloudoperators/greenhouse-prerequisites:0.33.0         github.com/cloudoperators/greenhouse/prerequisites/ocm-controller 0.33.0  cloudoperators
 ```
 
-<!-- SCREENSHOT: terminal output of `ocm get componentversions --recursive` for greenhouse-prerequisites in RBSC showing all 5 components -->
+<img width="1212" height="130" alt="image" src="https://github.com/user-attachments/assets/4d3ebcae-2745-4e26-a3b2-6669d90a7b4d" />
+
 
 ---
 
