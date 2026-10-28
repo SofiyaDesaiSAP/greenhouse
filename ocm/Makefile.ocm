@@ -4,19 +4,19 @@ DASHBOARD_IMAGE_REF       ?= ghcr.io/cloudoperators/juno-app-greenhouse@sha256:a
 CERT_MANAGER_VERSION      ?= 1.20.1
 FLUX_VERSION              ?= 2.15.0
 KRO_VERSION               ?= 0.9.4
-OCM_CONTROLLER_VERSION    ?= 0.33.0
+OCM_CONTROLLER_VERSION    ?= 0.19.1
 
 # OCM registry — must support deep OCI paths (ghcr.io works; Docker Hub does not).
 # Override for air-gapped target:  make push OCM_REGISTRY=oci://my-registry.internal
-OCM_REGISTRY ?= ghcr.io/sofiyadesaisap/greenhouse
+OCM_REGISTRY ?= ghcr.io/cloudoperators/greenhouse
 
 # GitHub PAT with write:packages scope — required by OCM v0.48 for ghcr.io auth.
 # Set via environment: export GITHUB_TOKEN=ghp_...
 GITHUB_TOKEN ?=
 
 GREENHOUSE_SRC     ?= ..
-SHOOT_KUBECONFIG   ?= $(or $(KUBECONFIG),../../key1-kubeconfig.yaml)
-GITHUB_USER        ?= SofiyaDesaiSAP
+SHOOT_KUBECONFIG   ?= $(or $(KUBECONFIG),../../green2-kubeconfig.yaml)
+GITHUB_USER        ?= $(shell git config user.name)
 
 # -----------------------------------------------------------------------
 # Keyless (Sigstore) signing — see keyless-signing.md

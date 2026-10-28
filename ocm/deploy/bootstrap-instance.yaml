@@ -7,27 +7,27 @@
 #
 # kro expands this into OCIRepositories + HelmReleases.
 #
-# The RBSC registry secret (registrySecretName) must exist in the greenhouse namespace
+# The registry secret (registrySecretName) must exist in the greenhouse namespace
 # before this instance is applied. Create it during bootstrap preparation:
 #   kubectl create secret docker-registry greenhouse-ocm-registry-creds \
-#     --docker-server=ghcr.io \
-#     --docker-username=<GITHUB_USER> \
-#     --docker-password=<GITHUB_TOKEN> \
+#     --docker-server=<ON_SITE_REGISTRY> \
+#     --docker-username=<REGISTRY_USER> \
+#     --docker-password=<REGISTRY_TOKEN> \
 #     -n greenhouse
 #
-# After all required HelmReleases are Ready, copy the OCM TLS secret and proceed
-# to the main deploy: kubectl apply -f deploy/instance.yaml
+# After all required HelmReleases are Ready, proceed to the main deploy:
+#   kubectl apply -f deploy/instance.yaml
 apiVersion: kro.run/v1alpha1
 kind: GreenhouseBootstrap
 metadata:
   name: greenhouse-bootstrap
   namespace: greenhouse
 spec:
-  rbscRegistry: "ghcr.io/sofiyadesaisap/greenhouse-rbsc"
+  onSiteRegistry: "<your-on-site-registry>"
   registrySecretName: "greenhouse-ocm-registry-creds"
   certManagerVersion: "1.20.1"
   prometheusCrdsVersion: "14.0.0"
-  ocmControllerVersion: "0.33.0"
+  ocmControllerVersion: "0.19.1"
   kroVersion: "0.9.4"
   fluxVersion: "2.5.1"
 

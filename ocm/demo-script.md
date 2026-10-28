@@ -42,7 +42,7 @@ cd /Users/i779118/projects/sci-k8s-cluster/greenhouse/ocm
 **`[LOCAL]`** — Get a GitHub PAT with `write:packages` scope. OCM needs this to push to GHCR.
 ```bash
 export GITHUB_TOKEN=$(gh auth token --hostname github.com)
-export GITHUB_USER=sofiyadesaisap
+export REGISTRY_USER=<your-registry-username>
 ```
 
 ---
@@ -98,7 +98,7 @@ bundle through every `ocm transfer`. Full rationale and the architecture decisio
 >   swapped blob is detected at verify time. The local CTF already carries these digests (the
 >   greenhouse/dashboard `ociImage` digests resolve at build time), so signing here is correct.
 > - ✅ It is **transfer-safe** — the signed digest excludes storage location (`access`,
->   `repositoryContexts`), so GHCR → RBSC does not invalidate it.
+>   `repositoryContexts`), so GHCR → on-site registry does not invalidate it.
 > - ❌ It is **not** a cosign `.sig` on the images and **does not reach pod admission**. Kyverno
 >   `verifyImages` cannot see it. Admission enforcement is a separate, optional decision — see the
 >   new **Part 6 (optional)** below and discussion brief §6.
@@ -154,7 +154,7 @@ make -f Makefile.ocm push GITHUB_TOKEN=$GITHUB_TOKEN
 **`[LOCAL]`** — Verify the top-level component resolves in GHCR:
 ```bash
 ocm get componentversions \
-  "oci://ghcr.io/sofiyadesaisap/greenhouse//github.com/cloudoperators/greenhouse:0.16.1" \
+  "oci://ghcr.io/cloudoperators/greenhouse//github.com/cloudoperators/greenhouse:0.16.1" \
   --recursive
 ```
 
@@ -165,8 +165,8 @@ Expected: 6 rows — `greenhouse`, `core`, `prerequisites/cert-manager`, `prereq
 
 ## PART 1 — On-Site Transfer *(shown live in demo)*
 
-> **Context:** In production the "on-site RBSC" is a disconnected registry inside the customer
-> datacenter. Here we simulate it as a separate GHCR repo (`greenhouse-rbsc`). The `ocm
+> **Context:** In production the "on-site registry" is a disconnected registry inside the customer
+> datacenter. Here we simulate it as a separate GHCR repo (`<your-on-site-registry>`). The `ocm
 > transfer` command is what runs at the air-gap boundary — it is the *only* step that needs
 > outbound internet access. After it completes, the cluster never contacts `ghcr.io/cloudoperators`
 > or any other external registry again.
@@ -182,7 +182,7 @@ component digest no longer matches and this fails — so the bad bundle never re
 registry. Add `OCM_VERIFY_LOCAL=1` to force fully-offline verification using only the embedded
 Sigstore bundle (no network egress).
 ```bash
-make -f Makefile.ocm verify-sigstore OCM_REGISTRY=ghcr.io/sofiyadesaisap/greenhouse
+make -f Makefile.ocm verify-sigstore OCM_REGISTRY=ghcr.io/cloudoperators/greenhouse
 ```
 Expected: `Verification succeeded` for signature `greenhouse-release`, confirming the identity
 (your email) and issuer (your OIDC provider). Only then proceed to the transfer below.
@@ -191,27 +191,27 @@ Expected: `Verification succeeded` for signature `greenhouse-release`, confirmin
 registry. This is the air-gap crossing step — it moves charts AND container image blobs.
 - `--copy-resources`: copies image blobs, not just manifest references
 - `--recursive`: follows component references (core + all prerequisites)
-- After this completes, the cluster never needs to reach `ghcr.io/sofiyadesaisap/greenhouse`
+- After this completes, the cluster never needs to reach `ghcr.io/cloudoperators/greenhouse`
 ```bash
 ocm transfer componentversion \
   --copy-resources \
   --recursive \
   --overwrite \
-  "oci://ghcr.io/sofiyadesaisap/greenhouse//github.com/cloudoperators/greenhouse:0.16.1" \
-  oci://ghcr.io/sofiyadesaisap/greenhouse-rbsc
+  "oci://ghcr.io/cloudoperators/greenhouse//github.com/cloudoperators/greenhouse:0.16.1" \
+  oci://<your-on-site-registry>
 ```
 
 > **Path preservation:** OCM strips the source registry host and preserves the original path
 > structure under the target. Images declared as
 > `ghcr.io/cloudoperators/greenhouse:v0.16.1` end up at
-> `ghcr.io/sofiyadesaisap/greenhouse-rbsc/cloudoperators/greenhouse:v0.16.1`.
-> This is why `imageRegistry: "ghcr.io/sofiyadesaisap/greenhouse-rbsc"` in the GreenhouseStack
+> `<your-on-site-registry>/cloudoperators/greenhouse:v0.16.1`.
+> This is why `imageRegistry: "<your-on-site-registry>"` in the GreenhouseStack
 > CR gives the correct prefix for all pod image pulls.
 
 **`[LOCAL]`** — Verify: all 6 components appear in the on-site registry.
 ```bash
 ocm get componentversions \
-  "oci://ghcr.io/sofiyadesaisap/greenhouse-rbsc//github.com/cloudoperators/greenhouse:0.16.1" \
+  "oci://<your-on-site-registry>//github.com/cloudoperators/greenhouse:0.16.1" \
   --recursive
 ```
 
@@ -313,7 +313,7 @@ make -f Makefile.ocm create-greenhouse-ns
 ```
 
 **`[CLUSTER]`** — Create the registry pull secret. The OCM controller uses this to fetch the
-bundle from the RBSC (simulated GHCR) registry. The `ComponentVersion` CR references this
+bundle from the on-site registry (simulated GHCR). The `ComponentVersion` CR references this
 secret via `secretRef`.
 ```bash
 make -f Makefile.ocm create-registry-secret GITHUB_TOKEN=$GITHUB_TOKEN
@@ -339,21 +339,21 @@ make -f Makefile.ocm create-values-secret
 
 ## PART 4 — Deploy *(THE DEMO MOMENT)*
 
-> Before applying OCM manifests, update the ComponentVersion to point at the RBSC registry
+> Before applying OCM manifests, update the ComponentVersion to point at the on-site registry
 > so OCM fetches the bundle from the on-site location — not the central GHCR.
 
 **`[LOCAL]`** — Edit `deploy/componentversion.yaml` and update the repository URL:
 ```yaml
 spec:
   repository:
-    url: ghcr.io/sofiyadesaisap/greenhouse-rbsc   # ← was: ghcr.io/sofiyadesaisap/greenhouse
+    url: <your-on-site-registry>   # ← was: ghcr.io/cloudoperators/greenhouse
 ```
 
 ---
 
 **`[CLUSTER]`** — Apply all OCM manifests via kustomize. This creates:
 - `Namespace` — greenhouse
-- `ComponentVersion` greenhouse — OCM controller fetches the bundle from the RBSC
+- `ComponentVersion` greenhouse — OCM controller fetches the bundle from the on-site registry
 - `Resource` CRs — one per chart (cert-manager, kro, ocm-controller, greenhouse, kro-rgd);
   each triggers OCM to extract the chart blob as a Snapshot in the internal registry
 - `ResourceGraphDefinition` greenhouse-stack — kro processes this and creates the
@@ -362,7 +362,7 @@ spec:
 make -f Makefile.ocm deploy-apply
 ```
 
-**`[CLUSTER]`** — Watch OCM resolve all components from the RBSC. `READY=True` on
+**`[CLUSTER]`** — Watch OCM resolve all components from the on-site registry. `READY=True` on
 `ComponentVersion` means the bundle was fetched. `READY=True` on each `Resource` means the
 chart blob was extracted as a local Snapshot.
 ```bash
@@ -386,14 +386,14 @@ greenhouse-stack-rgd   sha-<hash>                                     0.16.1
 ```
 
 **`[LOCAL]`** — Update `deploy/instance.yaml` with the snapshot paths from above and set
-`imageRegistry` to the RBSC URL. After OCM transfer, container images land at
-`ghcr.io/sofiyadesaisap/greenhouse-rbsc/cloudoperators/greenhouse:v0.16.1` — the
+`imageRegistry` to the on-site registry URL. After OCM transfer, container images land at
+`<your-on-site-registry>/cloudoperators/greenhouse:v0.16.1` — the
 `imageRegistry` prefix is all kro needs to construct the correct `image.repository` for
 every subchart.
 ```yaml
 spec:
   registryHost: "registry.ocm-system.svc.cluster.local:5000"
-  imageRegistry: "ghcr.io/sofiyadesaisap/greenhouse-rbsc"  # ← RBSC, not central GHCR
+  imageRegistry: "<your-on-site-registry>"  # ← on-site registry, not central GHCR
 
   certManagerSnapshotPath: "sha-<from snapshot-urls>"
   certManagerVersion: "1.20.1"
@@ -434,7 +434,7 @@ cert-manager → ocm-controller → greenhouse.
 kubectl get helmreleases -n greenhouse -w
 ```
 
-> `deploy/instance.yaml` has `imageRegistry: "ghcr.io/sofiyadesaisap/greenhouse-rbsc"` —
+> `deploy/instance.yaml` has `imageRegistry: "<your-on-site-registry>"` —
 > all container images (greenhouse controller-manager, idproxy, cors-proxy, authz, dashboard,
 > postgresql) are served from there. No external registry is ever contacted.
 
@@ -463,14 +463,14 @@ Pods (flux-system):  helm, source, kustomize, notification           — Running
 ```
 
 **`[CLUSTER]`** — Verify every container image in the `greenhouse` namespace comes from the
-RBSC only. No image should reference `ghcr.io/cloudoperators` directly — only the RBSC path.
+on-site registry only. No image should reference `ghcr.io/cloudoperators` directly — only the on-site registry path.
 ```bash
 kubectl get pods -n greenhouse \
   -o jsonpath='{range .items[*]}{range .spec.containers[*]}{.image}{"\n"}{end}{end}' \
   | sort -u
 ```
 
-Every line should start with `ghcr.io/sofiyadesaisap/greenhouse-rbsc/`.
+Every line should start with `<your-on-site-registry>/`.
 
 **`[CLUSTER]`** — Check the GreenhouseStack instance status. `ACTIVE` means kro successfully
 expanded the CR and all managed resources are reconciled.
@@ -510,17 +510,17 @@ in `deploy/instance.yaml` from the output. These flow through `kro-rgd.yaml` int
 `image.digest`, so every greenhouse pod runs `…@sha256:…`.
 
 > **Verify once:** OCM's recorded digest should equal the registry manifest digest the kubelet
-> pulls. Confirm with `crane digest <rbsc-image>:<tag>` (or `cosign triangulate`) and compare to
+> pulls. Confirm with `crane digest <on-site-registry-image>:<tag>` (or `cosign triangulate`) and compare to
 > `print-image-digests`. For multi-arch images confirm the index digest matches. (Risk to validate
 > before Enforce mode.)
 
 ### Step 6.2 — Generate the allowlist from the signed bundle
 
-**`[LOCAL]`** — Generate the ConfigMap from the verified bundle. Point `ALLOWLIST_SRC` at the RBSC
+**`[LOCAL]`** — Generate the ConfigMap from the verified bundle. Point `ALLOWLIST_SRC` at the on-site registry
 bundle after transfer, or use the local CTF default pre-demo.
 ```bash
 make -f Makefile.ocm gen-image-allowlist \
-  ALLOWLIST_SRC='oci://ghcr.io/sofiyadesaisap/greenhouse-rbsc//github.com/cloudoperators/greenhouse:0.16.1'
+  ALLOWLIST_SRC='oci://<your-on-site-registry>//github.com/cloudoperators/greenhouse:0.16.1'
 ```
 This writes `prereqs/image-digest-allowlist.yaml` (ConfigMap `ocm-signed-image-digests`). Only
 `ociImage` resources are included — that is what pods actually run.
@@ -553,7 +553,7 @@ kubectl apply -f prereqs/kyverno-digest-allowlist.yaml
 - **Option 2 — per-image cosign + Kyverno `verifyImages`:** true image signatures Kyverno verifies
   natively, but **blocked** — our images are upstream `ghcr.io/cloudoperators/...` which we cannot
   sign without re-hosting; also needs mirrored sigstore roots in-cluster. (Brief §6 Option 2.)
-- **Option 3 — registry/provenance only:** require images from the RBSC registry + digest-pinned,
+- **Option 3 — registry/provenance only:** require images from the on-site registry + digest-pinned,
   no allowlist. Simpler, not tied to the signed set. (Brief §6 Option 3.)
 
 ---
@@ -568,7 +568,7 @@ kubectl apply -f prereqs/kyverno-digest-allowlist.yaml
 | `GreenhouseStack` CRD not found after `deploy-apply` | `kubectl get resourcegraphdefinition` | kro may not have processed the RGD yet — wait 30s, check `kubectl get pods -n kro-system` |
 | Pods in `CrashLoopBackOff`: `ArtifactGenerator` CRD not found | greenhouse controller-manager logs | Re-run `make install-flux-extension-stubs` |
 | cert-manager install fails: CRD ownership conflict | HelmRelease events | Delete orphaned CRDs — see deployment guide Troubleshooting section |
-| `ImagePullBackOff` on greenhouse pods | `kubectl describe pod -n greenhouse` | Verify `imageRegistry` in `instance.yaml` matches actual RBSC path; re-run `make create-registry-secret` |
+| `ImagePullBackOff` on greenhouse pods | `kubectl describe pod -n greenhouse` | Verify `imageRegistry` in `instance.yaml` matches actual on-site registry path; re-run `make create-registry-secret` |
 | Snapshot paths in `instance.yaml` mismatch | `make snapshot-urls` | Re-run `make snapshot-urls`, update `instance.yaml`, re-apply `make deploy-instance` |
 | OCM controller pods `ContainerCreating`: `ocm-registry-tls-certs` not found | OCM controller pod events | `tlsCert.generateTlsCert=true` was not set — reinstall: `make install-ocm-controller` |
 | `ocm sign` fails: no browser / cannot open OIDC login | terminal output of `make sign-sigstore` | Run on a workstation with a browser; or configure a device-flow / headless OIDC token. Keyless requires an interactive login (brief §2) |
@@ -589,7 +589,7 @@ When a new Greenhouse version is released:
 3. Re-run Part 0 (build), then **re-sign** the new bundle (Step 2b — a new version needs a fresh
    signature; the old signature covers only the old digests), then push to central GHCR
 4. Re-run Part 1 — **re-verify the signature** (`make verify-sigstore`) before transfer, then
-   transfer to RBSC
+   transfer to the on-site registry
 5. Force OCM to re-pull:
    ```bash
    make -f Makefile.ocm deploy-reconcile-ocm

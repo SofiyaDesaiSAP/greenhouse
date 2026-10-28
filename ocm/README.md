@@ -331,7 +331,6 @@ GITHUB_TOKEN=$GITHUB_TOKEN ocm transfer ctf \
 ```
 
 > **Note:** GHCR requires the username/org to be **all lowercase** in the path.
-> `SofiyaDesaiSAP` → `sofiyadesaisap`.
 
 **Flag reference:**
 

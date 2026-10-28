@@ -4,18 +4,12 @@
 # When kro processes this RGD it creates the GreenhouseStack CRD.
 # Apply the GreenhouseStack instance separately: make -f Makefile.ocm deploy-instance
 #
-# Resource graph: ComponentVersion → Resource → FluxDeployer → HelmRelease
+# Resource graph: Repository → Component → Resource → OCIRepository → HelmRelease
 #
-# FluxDeployer is used ONLY for OCIRepository creation:
-#   - sourceRef: kind: Resource reads Resource.status.snapshotName → Snapshot →
-#     Snapshot.status.repositoryURL → correct sha-... OCI path in the in-cluster registry
-#   - helmReleaseTemplate is intentionally OMITTED: FluxDeployer v0.33.0 ignores
-#     helmReleaseTemplate.spec when creating the HelmRelease (only chartRef is propagated).
-#     Without helmReleaseTemplate, FluxDeployer creates only the OCIRepository.
-# The HelmRelease is managed directly by kro so valuesFrom, values (digest pinning),
-# dependsOn, and targetNamespace are all under kro's control.
-# HelmRelease.chartRef.name references "${greenhouseFluxDeployer.metadata.name}" to
-# pick up the OCIRepository created by FluxDeployer and gate on FluxDeployer readiness.
+# The new OCM controller (open-component-model/open-component-model v0.21.0+) has no
+# local in-cluster registry. Resource.status.additional.oci exposes the resolved OCI
+# URL directly via additionalStatusFields CEL. The OCIRepository reads that URL and
+# pulls the chart from the on-site registry — no manual path copying required.
 #
 # Schema uses kro v0.9.x SimpleSchema syntax (inline type strings, not {type: string}).
 # readyWhen conditions on each resource gate downstream resource creation.
@@ -29,25 +23,28 @@ spec:
     apiVersion: v1alpha1
     kind: GreenhouseStack
     spec:
-      # RBSC registry base URL, e.g. "ghcr.io/sofiyadesaisap/greenhouse-rbsc"
-      # Used as ComponentVersion repository URL and image registry prefix for digest pinning.
-      imageRegistry: "string"
-      # docker-registry secret name in the greenhouse namespace (RBSC auth)
+      # On-site OCI registry base URL — the air-gapped registry your cluster can reach.
+      # After `ocm transfer ctf --copy-resources`, all charts and images live here.
+      onSiteRegistry: "string"
+      # docker-registry secret name in the greenhouse namespace for on-site registry auth.
       registrySecretName: "string"
       # Semver constraint for the greenhouse OCM component, e.g. ">=0.23.0"
       componentVersion: "string"
-      # Image content digests from the OCM-signed bundle (Option 1 digest pinning).
-      # Pods run by @sha256 so the Kyverno allowlist enforces "only signed content runs".
+      # Image content digests from the OCM-signed bundle (digest pinning).
+      # Pods run by @sha256 so the digest enforces "only signed content runs".
       # greenhouseImageDigest pins the shared greenhouse binary (manager/idproxy/cors-proxy/authz).
       # dashboardImageDigest pins the dashboard UI image. Format: "sha256:<hex>".
       # Get current values with: make -f Makefile.ocm print-image-digests
       greenhouseImageDigest: "string"
       dashboardImageDigest: "string"
+      # Registry prefix for postgres images after OCM transfer, e.g. "<on-site>/sapcc"
+      postgresImageRegistry: "string"
       # Secret in the greenhouse namespace that holds values.yaml for the greenhouse HelmRelease.
       valuesSecretName: "string"
       # Set false when cert-manager/ocm-controller are pre-installed but NOT managed via a
-      # kro GreenhouseBootstrap HelmRelease (i.e. no cert-manager HR in the greenhouse namespace).
-      # When true, the greenhouse HelmRelease waits for those bootstrap HelmReleases to be Ready.
+      # kro GreenhouseBootstrap HelmRelease (i.e. no cert-manager or ocm-k8s-toolkit HR in
+      # the greenhouse namespace). When true, the greenhouse HelmRelease waits for those
+      # bootstrap HelmReleases to be Ready.
       enableCertManager: "boolean"
       enableOcmController: "boolean"
 
@@ -56,31 +53,49 @@ spec:
 
   resources:
 
-    # ── OCM ComponentVersion ──────────────────────────────────────────────
-    # Points at the greenhouse product component in the RBSC registry.
-    - id: greenhouseComponentVersion
+    # ── OCM Repository ────────────────────────────────────────────────────
+    # Points at the on-site OCI registry where the OCM bundle was transferred.
+    - id: greenhouseRepository
       readyWhen:
-        - "${greenhouseComponentVersion.status.conditions.exists(c, c.type == 'Ready' && c.status == 'True')}"
+        - "${greenhouseRepository.status.conditions.exists(c, c.type == 'Ready' && c.status == 'True')}"
       template:
         apiVersion: delivery.ocm.software/v1alpha1
-        kind: ComponentVersion
+        kind: Repository
         metadata:
-          name: greenhouse
+          name: greenhouse-repository
+          namespace: greenhouse
+        spec:
+          interval: 10m
+          repositorySpec:
+            baseUrl: "${schema.spec.onSiteRegistry}"
+            type: OCIRegistry
+          ocmConfig:
+            - kind: Secret
+              name: "${schema.spec.registrySecretName}"
+              policy: Propagate
+
+    # ── OCM Component ─────────────────────────────────────────────────────
+    # Resolves the greenhouse component version from the semver constraint.
+    - id: greenhouseComponent
+      readyWhen:
+        - "${greenhouseComponent.status.conditions.exists(c, c.type == 'Ready' && c.status == 'True')}"
+      template:
+        apiVersion: delivery.ocm.software/v1alpha1
+        kind: Component
+        metadata:
+          name: greenhouse-component
           namespace: greenhouse
         spec:
           interval: 10m
           component: github.com/cloudoperators/greenhouse
-          version:
-            semver: "${schema.spec.componentVersion}"
-          repository:
-            url: "${schema.spec.imageRegistry}"
-            secretRef:
-              name: "${schema.spec.registrySecretName}"
+          semver: "${schema.spec.componentVersion}"
+          repositoryRef:
+            name: "${greenhouseRepository.metadata.name}"
 
     # ── OCM Resource ──────────────────────────────────────────────────────
-    # Uses the v0.33.0 API: resourceRef and referencePath are inside sourceRef.
-    # Navigates root component → core sub-component → greenhouse-chart resource.
-    # Creates a Snapshot; status.snapshotName is read by the FluxDeployer below.
+    # Extracts the greenhouse-chart resource from the core sub-component.
+    # additionalStatusFields exposes the resolved OCI URL (registry, repository, digest)
+    # which the OCIRepository below consumes — no manual path copying required.
     - id: greenhouseChartResource
       readyWhen:
         - "${greenhouseChartResource.status.conditions.exists(c, c.type == 'Ready' && c.status == 'True')}"
@@ -91,47 +106,44 @@ spec:
           name: greenhouse-chart
           namespace: greenhouse
         spec:
-          interval: 10m
-          sourceRef:
-            apiVersion: delivery.ocm.software/v1alpha1
-            kind: ComponentVersion
-            name: "${greenhouseComponentVersion.metadata.name}"
-            namespace: greenhouse
-            resourceRef:
-              name: greenhouse-chart
+          componentRef:
+            name: "${greenhouseComponent.metadata.name}"
+          resource:
+            byReference:
+              resource:
+                name: greenhouse-chart
               referencePath:
                 - name: core
+          additionalStatusFields:
+            oci: resource.access.toOCI()
 
-    # ── OCM FluxDeployer ──────────────────────────────────────────────────
-    # Creates an OCIRepository only (helmReleaseTemplate intentionally omitted).
-    # The controller reads Resource.status.snapshotName → Snapshot → repositoryURL
-    # and creates an OCIRepository named after the FluxDeployer ("greenhouse") with
-    # the correct OCI path (sha-... in the in-cluster registry).
-    # helmReleaseTemplate is omitted because FluxDeployer v0.33.0 does not propagate
-    # helmReleaseTemplate.spec to the HelmRelease it creates — only chartRef is set.
-    # The HelmRelease below is managed directly by kro with full values.
-    - id: greenhouseFluxDeployer
+    # ── Flux OCIRepository ────────────────────────────────────────────────
+    # URL and digest derived from Resource.status.additional.oci — fully automatic.
+    # layerSelector targets the Helm chart layer specifically.
+    - id: greenhouseOCIRepo
       readyWhen:
-        - "${greenhouseFluxDeployer.status.conditions.exists(c, c.type == 'Ready' && c.status == 'True')}"
+        - "${greenhouseOCIRepo.status.conditions.exists(c, c.type == 'Ready' && c.status == 'True')}"
       template:
-        apiVersion: delivery.ocm.software/v1alpha1
-        kind: FluxDeployer
+        apiVersion: source.toolkit.fluxcd.io/v1
+        kind: OCIRepository
         metadata:
           name: greenhouse
           namespace: greenhouse
         spec:
           interval: 10m
-          sourceRef:
-            apiVersion: delivery.ocm.software/v1alpha1
-            kind: Resource
-            name: "${greenhouseChartResource.metadata.name}"
-            namespace: greenhouse
+          url: "oci://${greenhouseChartResource.status.additional.oci.registry}/${greenhouseChartResource.status.additional.oci.repository}"
+          ref:
+            digest: "${greenhouseChartResource.status.additional.oci.digest}"
+          layerSelector:
+            mediaType: "application/vnd.cncf.helm.chart.content.v1.tar+gzip"
+            operation: copy
+          secretRef:
+            name: "${schema.spec.registrySecretName}"
 
     # ── Flux HelmRelease ──────────────────────────────────────────────────
-    # chartRef.name references "${greenhouseFluxDeployer.metadata.name}" which resolves
-    # to "greenhouse" — the name of the OCIRepository created by FluxDeployer above.
-    # This also gates kro: HelmRelease is not created until FluxDeployer is Ready
-    # (meaning the OCIRepository exists and has a valid artifact).
+    # chartRef.name references the OCIRepository above.
+    # image.repository overrides point all pods at the on-site registry — air-gap guarantee.
+    # image.digest pins the exact content from the OCM-signed bundle.
     - id: greenhouseHR
       readyWhen:
         - "${greenhouseHR.status.conditions.exists(c, c.type == 'Ready' && c.status == 'True')}"
@@ -146,19 +158,9 @@ spec:
           targetNamespace: greenhouse
           chartRef:
             kind: OCIRepository
-            name: "${greenhouseFluxDeployer.metadata.name}"
+            name: "${greenhouseOCIRepo.metadata.name}"
             namespace: greenhouse
-          dependsOn: '${(schema.spec.enableCertManager ? [{"name":"cert-manager","namespace":"greenhouse"}] : []) + (schema.spec.enableOcmController ? [{"name":"ocm-controller","namespace":"greenhouse"}] : [])}'
-          postRenderers:
-            - kustomize:
-                patches:
-                  - target:
-                      kind: Deployment
-                    patch: |
-                      - op: add
-                        path: /spec/template/spec/imagePullSecrets
-                        value:
-                          - name: "${schema.spec.registrySecretName}"
+          dependsOn: '${(schema.spec.enableCertManager ? [{"name":"cert-manager","namespace":"greenhouse"}] : []) + (schema.spec.enableOcmController ? [{"name":"ocm-k8s-toolkit","namespace":"greenhouse"}] : [])}'
           valuesFrom:
             - kind: Secret
               name: "${schema.spec.valuesSecretName}"
@@ -168,24 +170,24 @@ spec:
             manager:
               controllerManager:
                 image:
-                  repository: "${schema.spec.imageRegistry}/cloudoperators/greenhouse"
+                  repository: "${schema.spec.onSiteRegistry}/cloudoperators/greenhouse"
                   digest: "${schema.spec.greenhouseImageDigest}"
             idproxy:
               image:
-                repository: "${schema.spec.imageRegistry}/cloudoperators/greenhouse"
+                repository: "${schema.spec.onSiteRegistry}/cloudoperators/greenhouse"
                 digest: "${schema.spec.greenhouseImageDigest}"
             cors-proxy:
               image:
-                repository: "${schema.spec.imageRegistry}/cloudoperators/greenhouse"
+                repository: "${schema.spec.onSiteRegistry}/cloudoperators/greenhouse"
                 digest: "${schema.spec.greenhouseImageDigest}"
             authz:
               image:
-                repository: "${schema.spec.imageRegistry}/cloudoperators/greenhouse"
+                repository: "${schema.spec.onSiteRegistry}/cloudoperators/greenhouse"
                 digest: "${schema.spec.greenhouseImageDigest}"
             dashboard:
               image:
-                repository: "${schema.spec.imageRegistry}/cloudoperators/juno-app-greenhouse"
+                repository: "${schema.spec.onSiteRegistry}/cloudoperators/juno-app-greenhouse"
                 digest: "${schema.spec.dashboardImageDigest}"
             postgresqlng:
               global:
-                registry: "${schema.spec.imageRegistry}/sapcc"
+                registry: "${schema.spec.postgresImageRegistry}"

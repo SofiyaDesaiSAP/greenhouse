@@ -15,7 +15,7 @@
 #   CERT_MANAGER_VERSION      - e.g. 1.20.1
 #   FLUX_VERSION              - e.g. 2.15.0
 #   KRO_VERSION               - e.g. 0.9.4
-#   OCM_CONTROLLER_VERSION    - e.g. 0.33.0  (no v-prefix; imageReference tag uses v-prefix)
+#   OCM_CONTROLLER_VERSION    - e.g. 0.19.1  (no v-prefix)
 #
 # Build:
 #   make -f Makefile.ocm build-prerequisites
@@ -25,10 +25,10 @@ components:
   # -------------------------------------------------------------------------
   # Prerequisite: cert-manager
   # Uses access.type: ociArtifact so that `ocm transfer --copy-resources` copies
-  # the chart blob to the RBSC at the original OCI path:
+  # the chart blob to the on-site registry at the original OCI path:
   #   ghcr.io/cloudoperators/greenhouse-extensions/charts/cert-manager:${CERT_MANAGER_VERSION}
-  #   → <rbsc>/cloudoperators/greenhouse-extensions/charts/cert-manager:${CERT_MANAGER_VERSION}
-  # This makes the chart directly consumable by Flux OCIRepository at the RBSC path,
+  #   → <onSiteRegistry>/cloudoperators/greenhouse-extensions/charts/cert-manager:${CERT_MANAGER_VERSION}
+  # This makes the chart directly consumable by Flux OCIRepository at the on-site path,
   # enabling fully air-gapped bootstrap via the GreenhouseBootstrap RGD.
   # -------------------------------------------------------------------------
   - name: github.com/cloudoperators/greenhouse/prerequisites/cert-manager
@@ -89,9 +89,9 @@ components:
 
   # -------------------------------------------------------------------------
   # Prerequisite: ocm-controller
-  # Uses access.type: ociArtifact — --copy-resources copies the chart to the RBSC
+  # Uses access.type: ociArtifact — --copy-resources copies the chart to the on-site registry
   # at the original OCI path for direct Flux consumption (air-gapped bootstrap).
-  # Resource version uses no v-prefix; imageReference tag uses v-prefix (OCI convention).
+  # Resource version and imageReference tag both use no v-prefix (chart OCI convention).
   # -------------------------------------------------------------------------
   - name: github.com/cloudoperators/greenhouse/prerequisites/ocm-controller
     version: ${OCM_CONTROLLER_VERSION}
@@ -106,7 +106,7 @@ components:
         version: ${OCM_CONTROLLER_VERSION}
         access:
           type: ociArtifact
-          imageReference: ghcr.io/open-component-model/helm/ocm-controller:v${OCM_CONTROLLER_VERSION}
+          imageReference: ghcr.io/open-component-model/kubernetes/controller/chart:${OCM_CONTROLLER_VERSION}
 
   # -------------------------------------------------------------------------
   # Top-level prerequisites bundle — references all 4 prerequisites

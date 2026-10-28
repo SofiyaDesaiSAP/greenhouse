@@ -1,13 +1,13 @@
 # kro ResourceGraphDefinition for Greenhouse Bootstrap
 #
 # Installs cluster prerequisites (Flux, kro, cert-manager, prometheus-operator CRDs,
-# OCM controller) via kro + Flux, pulling charts from the on-site RBSC registry
+# OCM controller) via kro + Flux, pulling charts from the on-site registry
 # or public OCI where noted.
 #
-# After `ocm transfer --copy-resources --recursive`, the RBSC holds Helm chart blobs at
-# paths derived from OCM's path-preservation rule (source registry host is stripped):
-#   cert-manager:    oci://<rbsc>/cloudoperators/greenhouse-extensions/charts/cert-manager
-#   ocm-controller:  oci://<rbsc>/open-component-model/helm/ocm-controller
+# After `ocm transfer ctf --copy-resources`, the on-site registry holds Helm chart blobs
+# at paths derived from OCM's path-preservation rule (source registry host is stripped):
+#   cert-manager:    oci://<on-site>/cloudoperators/greenhouse-extensions/charts/cert-manager
+#   ocm-controller:  oci://<on-site>/open-component-model/kubernetes/controller/chart
 #
 # prometheus-operator-crds is NOT in the OCM bundle (greenhouse unconditionally creates
 # PrometheusRule resources, but prometheus-crds is not an OCM component).
@@ -34,9 +34,9 @@ spec:
     apiVersion: v1alpha1
     kind: GreenhouseBootstrap
     spec:
-      # RBSC registry host, e.g. "ghcr.io/sofiyadesaisap/greenhouse-rbsc"
-      rbscRegistry: "string"
-      # Name of the docker-registry secret in the greenhouse namespace with RBSC credentials
+      # On-site OCI registry base URL (same as onSiteRegistry in kro-rgd.yaml).
+      onSiteRegistry: "string"
+      # Name of the docker-registry secret in the greenhouse namespace for on-site registry auth.
       registrySecretName: "string"
       certManagerVersion: "string"
       # prometheus-operator-crds is NOT in the OCM bundle — pulls from public OCI.
@@ -99,11 +99,11 @@ spec:
             namespace: greenhouse
 
     # ── cert-manager ─────────────────────────────────────────────────────
-    # Pulled from the RBSC. Path derived from component-constructor.yaml:
+    # Pulled from the on-site registry. Path derived from greenhouse-prerequisites-component.yaml:
     #   access.type: ociArtifact
     #   imageReference: ghcr.io/cloudoperators/greenhouse-extensions/charts/cert-manager:${version}
     # --copy-resources strips the source host and writes the blob to:
-    #   <rbscRegistry>/cloudoperators/greenhouse-extensions/charts/cert-manager
+    #   <onSiteRegistry>/cloudoperators/greenhouse-extensions/charts/cert-manager
     - id: certManagerOCIRepo
       template:
         apiVersion: source.toolkit.fluxcd.io/v1
@@ -114,7 +114,7 @@ spec:
         spec:
           interval: 10m
           suspend: ${!(schema.spec.installPrerequisites && schema.spec.installCertManager)}
-          url: "oci://${schema.spec.rbscRegistry}/cloudoperators/greenhouse-extensions/charts/cert-manager"
+          url: "oci://${schema.spec.onSiteRegistry}/cloudoperators/greenhouse-extensions/charts/cert-manager"
           ref:
             tag: "${schema.spec.certManagerVersion}"
           secretRef:
@@ -143,15 +143,14 @@ spec:
           values:
             installCRDs: true
 
-    # ── OCM controller ────────────────────────────────────────────────────
-    # Pulled from the RBSC. Path derived from component-constructor.yaml:
+    # ── OCM controller (open-component-model v0.21.0+) ────────────────────
+    # Pulled from the on-site registry. Path derived from greenhouse-prerequisites-component.yaml:
     #   access.type: ociArtifact
-    #   imageReference: ghcr.io/open-component-model/helm/ocm-controller:v${version}
+    #   imageReference: ghcr.io/open-component-model/kubernetes/controller/chart:${version}
     # --copy-resources strips the source host and writes the blob to:
-    #   <rbscRegistry>/open-component-model/helm/ocm-controller
-    # MUST depend on cert-manager — OCM controller uses cert-manager for webhook TLS.
-    # MUST set tlsCert.generateTlsCert=true — without it the internal registry has no
-    # TLS cert and all Flux OCIRepository pulls from registry.ocm-system... fail.
+    #   <onSiteRegistry>/open-component-model/kubernetes/controller/chart
+    # The new controller has no local in-cluster registry — no cert-manager dependency,
+    # no TLS cert required.
     - id: ocmControllerOCIRepo
       template:
         apiVersion: source.toolkit.fluxcd.io/v1
@@ -162,9 +161,9 @@ spec:
         spec:
           interval: 10m
           suspend: ${!(schema.spec.installPrerequisites && schema.spec.installOcmController)}
-          url: "oci://${schema.spec.rbscRegistry}/open-component-model/helm/ocm-controller"
+          url: "oci://${schema.spec.onSiteRegistry}/open-component-model/kubernetes/controller/chart"
           ref:
-            tag: "v${schema.spec.ocmControllerVersion}"
+            tag: "${schema.spec.ocmControllerVersion}"
           secretRef:
             name: "${schema.spec.registrySecretName}"
 
@@ -173,22 +172,18 @@ spec:
         apiVersion: helm.toolkit.fluxcd.io/v2
         kind: HelmRelease
         metadata:
-          name: ocm-controller
+          name: ocm-k8s-toolkit
           namespace: greenhouse
         spec:
           interval: 10m
           suspend: ${!(schema.spec.installPrerequisites && schema.spec.installOcmController)}
-          targetNamespace: ocm-system
+          targetNamespace: ocm-k8s-toolkit-system
           install:
             createNamespace: true
-          dependsOn: '${schema.spec.installCertManager ? [{"name":"cert-manager","namespace":"greenhouse"}] : []}'
           chartRef:
             kind: OCIRepository
             name: ocm-controller-bootstrap
             namespace: greenhouse
-          values:
-            tlsCert:
-              generateTlsCert: true
 
     # ── kro ───────────────────────────────────────────────────────────────
     # Pulled from public OCI (registry.k8s.io).

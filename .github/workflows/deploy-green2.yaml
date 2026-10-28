@@ -1,0 +1,206 @@
+name: Deploy Greenhouse to green2
+
+# Deploys greenhouse to the green2 Gardener cluster from scratch.
+# ghcr.io/cloudoperators acts as both the central and on-site registry — no transfer step.
+#
+# Bootstrap order on a fresh cluster:
+#   Flux  (direct helm install — HelmRelease reconciliation requires Flux first)
+#   kro   (direct helm install — RGD processing requires kro first)
+#   GreenhouseBootstrap RGD  →  cert-manager + OCM controller from ghcr.io
+#   GreenhouseStack RGD      →  greenhouse from ghcr.io
+#
+# enableFlux / enableKro stay false in bootstrap-instance.yaml: the bootstrap RGD's
+# Flux/kro OCIRepositories pull from public registries, so we install them directly first.
+#
+# Required GitHub secrets (Settings → Secrets → Actions):
+#   KUBECONFIG               base64-encoded content of the green2 kubeconfig
+#   GREENHOUSE_VALUES_YAML   Full contents of greenhouse-values.yaml (the Helm values)
+
+on:
+  workflow_dispatch:
+    inputs:
+      component_version:
+        description: 'Semver constraint for the greenhouse OCM component'
+        required: false
+        default: '>=0.23.0'
+
+permissions:
+  contents: read
+  packages: read   # read ghcr.io/cloudoperators/* for OCM components
+
+env:
+  FLUX_VERSION: "2.15.0"
+  KRO_VERSION: "0.9.4"
+
+jobs:
+
+  deploy:
+    name: Deploy to green2
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2 # v5.0.0
+
+      - name: Set up kubeconfig
+        run: |
+          echo "${{ secrets.KUBECONFIG }}" | base64 -d > /tmp/kubeconfig.yaml
+          echo "KUBECONFIG=/tmp/kubeconfig.yaml" >> $GITHUB_ENV
+
+      - name: Verify cluster connectivity
+        run: kubectl cluster-info
+
+      # ── Step 1: Flux ────────────────────────────────────────────────────────
+      # Must run before any HelmRelease can reconcile.
+      - name: Install Flux
+        run: |
+          helm upgrade --install flux2 \
+            oci://ghcr.io/fluxcd-community/charts/flux2 \
+            --version ${{ env.FLUX_VERSION }} \
+            --namespace flux-system \
+            --create-namespace \
+            --wait \
+            --timeout 5m
+
+      # ── Step 2: kro ─────────────────────────────────────────────────────────
+      # Must run before kubectl apply -k can create the GreenhouseBootstrap/GreenhouseStack CRDs.
+      - name: Install kro
+        run: |
+          helm upgrade --install kro \
+            oci://registry.k8s.io/kro/charts/kro \
+            --version ${{ env.KRO_VERSION }} \
+            --namespace kro-system \
+            --create-namespace \
+            --wait \
+            --timeout 5m
+
+      # ── Step 3: helm-controller RBAC ────────────────────────────────────────
+      # Flux's helm-controller needs cluster-admin to install greenhouse, which
+      # creates ClusterRoles, CRDs, and webhook configurations.
+      - name: Grant helm-controller cluster-admin RBAC
+        run: |
+          kubectl create clusterrolebinding helm-controller-cluster-admin \
+            --clusterrole=cluster-admin \
+            --serviceaccount=flux-system:helm-controller \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      # ── Step 4: Apply kustomize ──────────────────────────────────────────────
+      # Applies namespace.yaml + kro-rgd.yaml + bootstrap-rgd.yaml.
+      # kro processes both RGDs and registers the GreenhouseBootstrap and GreenhouseStack CRDs.
+      - name: Apply kustomize (namespace + RGDs)
+        run: kubectl apply -k ocm/deploy/
+
+      - name: Wait for CRDs to be registered
+        run: |
+          kubectl wait --for=condition=Established \
+            crd/greenhousebootstraps.kro.run \
+            crd/greenhousestacks.kro.run \
+            --timeout=120s
+
+      # ── Step 5: Registry secret ──────────────────────────────────────────────
+      # ghcr.io is the on-site registry — GITHUB_TOKEN gives read access to public packages.
+      - name: Create ghcr.io registry secret
+        run: |
+          OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          kubectl create secret docker-registry greenhouse-ocm-registry-creds \
+            --namespace greenhouse \
+            --docker-server="ghcr.io" \
+            --docker-username="${{ github.actor }}" \
+            --docker-password="${{ secrets.GITHUB_TOKEN }}" \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      # ── Step 6: Bootstrap prerequisites ─────────────────────────────────────
+      # Installs cert-manager and OCM controller (ocm-k8s-toolkit) via the bootstrap RGD.
+      # onSiteRegistry = ghcr.io/cloudoperators (where the OCM prereqs bundle was pushed).
+      - name: Apply GreenhouseBootstrap instance
+        run: |
+          OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          sed "s|<your-on-site-registry>|ghcr.io/${OWNER}|g" \
+            ocm/deploy/bootstrap-instance.yaml | kubectl apply -f -
+
+      # Trigger immediate OCIRepository reconciliation — don't wait for the default 10m interval.
+      - name: Force immediate OCIRepository reconciliation
+        run: |
+          sleep 15
+          kubectl annotate ocirepository --all -n greenhouse \
+            reconcile.fluxcd.io/requestedAt="$(date +%s)" --overwrite || true
+
+      - name: Wait for cert-manager HelmRelease
+        run: |
+          kubectl wait helmrelease/cert-manager \
+            --namespace greenhouse \
+            --for=condition=Ready \
+            --timeout=300s
+
+      - name: Wait for OCM controller HelmRelease
+        run: |
+          kubectl wait helmrelease/ocm-k8s-toolkit \
+            --namespace greenhouse \
+            --for=condition=Ready \
+            --timeout=300s
+
+      # ── Step 7: Flux extension stubs ────────────────────────────────────────
+      # greenhouse controller-manager watches ArtifactGenerator.source.extensions.fluxcd.io.
+      # Without this stub CRD the controller enters CrashLoopBackOff on startup.
+      - name: Apply Flux extension stubs
+        run: kubectl apply -f ocm/prereqs/flux-extension-stubs.yaml
+
+      # ── Step 8: Greenhouse values secret ────────────────────────────────────
+      - name: Create greenhouse values secret
+        run: |
+          kubectl create secret generic greenhouse-values \
+            --namespace greenhouse \
+            --from-literal=values.yaml="${{ secrets.GREENHOUSE_VALUES_YAML }}" \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      # ── Step 9: Deploy greenhouse stack ─────────────────────────────────────
+      # onSiteRegistry = ghcr.io/cloudoperators (greenhouse bundle).
+      # postgresImageRegistry = ghcr.io/sapcc (postgres images are not in the OCM bundle;
+      # they are pulled directly from their original location).
+      - name: Apply GreenhouseStack instance
+        run: |
+          OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          sed \
+            -e "s|<your-on-site-registry>/<postgres-path-prefix>|ghcr.io/sapcc|g" \
+            -e "s|<your-on-site-registry>|ghcr.io/${OWNER}|g" \
+            ocm/deploy/instance.yaml | kubectl apply -f -
+
+      # Patch imagePullSecrets on all ServiceAccounts in the greenhouse namespace.
+      # The greenhouse chart does not propagate global.imagePullSecrets to all subcharts.
+      # Without this, pods start in ImagePullBackOff on first install.
+      # Wait for the HelmRelease to be created by kro (SAs appear shortly after), then patch.
+      - name: Wait for greenhouse HelmRelease to be created
+        run: |
+          until kubectl get helmrelease greenhouse -n greenhouse 2>/dev/null; do
+            echo "waiting for HelmRelease/greenhouse..."
+            sleep 10
+          done
+
+      - name: Patch imagePullSecrets on all ServiceAccounts
+        run: |
+          for sa in $(kubectl get serviceaccount -n greenhouse \
+              -o jsonpath='{.items[*].metadata.name}'); do
+            kubectl patch serviceaccount "$sa" -n greenhouse --type=merge \
+              -p '{"imagePullSecrets":[{"name":"greenhouse-ocm-registry-creds"}]}'
+          done
+          kubectl rollout restart deployment -n greenhouse || true
+
+      - name: Wait for greenhouse HelmRelease
+        run: |
+          kubectl wait helmrelease/greenhouse \
+            --namespace greenhouse \
+            --for=condition=Ready \
+            --timeout=600s
+
+      # ── Verify ────────────────────────────────────────────────────────────────
+      - name: Verify deployment
+        run: |
+          echo "=== HelmReleases ==="
+          kubectl get helmrelease -n greenhouse
+          echo "=== Pods ==="
+          kubectl get pods -n greenhouse
+          echo "=== GreenhouseStack status ==="
+          kubectl get greenhousestack greenhouse -n greenhouse -o jsonpath='{.status}' | jq .

@@ -1,0 +1,210 @@
+name: Build and Push OCM Bundles
+
+# Builds and signs two OCM bundles:
+#   1. greenhouse-bundle          (greenhouse chart + images — open-source default)
+#   2. greenhouse-prereqs-bundle  (cert-manager, Flux, kro, OCM controller — opt-in)
+#
+# Both bundles are pushed to ghcr.io/cloudoperators (no --overwrite; artifacts are
+# content-addressed and immutable — re-pushing the same version is a no-op via
+# sha256 equality, but --overwrite would mutate existing refs and break signature chains).
+#
+# Signing: keyless Sigstore OIDC (cosign + id-token: write).
+# Verify after push: ocm get componentversion on the live registry.
+
+on:
+  workflow_dispatch:
+    inputs:
+      dashboard_image_ref:
+        description: >
+          Dashboard image ref (e.g. ghcr.io/cloudoperators/juno-app-greenhouse@sha256:...).
+          Defaults to the value pinned in Makefile.ocm.
+        required: false
+  push:
+    branches:
+      - main
+    paths:
+      - 'ocm/greenhouse-component.yaml'
+      - 'ocm/greenhouse-prerequisites-component.yaml'
+      - 'ocm/deploy/kro-rgd.yaml'
+      - 'charts/greenhouse/Chart.yaml'
+      - 'ocm/Makefile.ocm'
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write   # required for keyless Sigstore OIDC signing
+
+env:
+  # Prerequisite component versions — bump here when upgrading bootstrap tools.
+  CERT_MANAGER_VERSION: "1.20.1"
+  FLUX_VERSION: "2.15.0"
+  KRO_VERSION: "0.9.4"
+  OCM_CONTROLLER_VERSION: "0.19.1"
+  # Default dashboard image (separate release cadence from the greenhouse binary).
+  # Override via workflow_dispatch input when releasing a new dashboard version.
+  DASHBOARD_IMAGE_REF_DEFAULT: "ghcr.io/cloudoperators/juno-app-greenhouse@sha256:ae366951d37198d05d6b3d5859dec8181530d380ea7b9a8a8cfc5a8f07937631"
+  OCM_VERSION: "v0.48.0"
+
+jobs:
+
+  # ── Job 1: greenhouse product bundle ────────────────────────────────────────
+  build-greenhouse:
+    name: Build and push greenhouse bundle
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4
+
+      - name: Install yq
+        run: |
+          YQ_VERSION="v4.44.3"
+          curl -fsSL "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64" \
+            -o /tmp/yq && sudo mv /tmp/yq /usr/local/bin/yq && sudo chmod +x /usr/local/bin/yq
+          yq --version
+
+      - name: Set up Helm
+        uses: azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2 # v5.0.0
+
+      - name: Install OCM CLI
+        run: |
+          OCM_VERSION_CLEAN="${OCM_VERSION#v}"
+          curl -fsSL "https://github.com/open-component-model/ocm/releases/download/${OCM_VERSION}/ocm-${OCM_VERSION_CLEAN}-linux-amd64.tar.gz" \
+            -o /tmp/ocm.tar.gz
+          tar xzf /tmp/ocm.tar.gz -C /tmp/
+          sudo mv /tmp/ocm /usr/local/bin/
+          ocm version
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@dc72c7d5c4d10cd6bcb8cf6e3fd625a9e5e537da # v3.7.0
+
+      - name: Detect versions from Chart.yaml
+        id: versions
+        run: |
+          GREENHOUSE_VERSION=$(yq '.version' charts/greenhouse/Chart.yaml)
+          APP_VERSION=$(yq '.appVersion' charts/greenhouse/Chart.yaml)
+          DASHBOARD_IMAGE_REF="${{ github.event.inputs.dashboard_image_ref || env.DASHBOARD_IMAGE_REF_DEFAULT }}"
+          echo "greenhouse_version=${GREENHOUSE_VERSION}" >> $GITHUB_OUTPUT
+          echo "greenhouse_image_ref=ghcr.io/cloudoperators/greenhouse:${APP_VERSION}" >> $GITHUB_OUTPUT
+          echo "dashboard_image_ref=${DASHBOARD_IMAGE_REF}" >> $GITHUB_OUTPUT
+          echo "Chart version: ${GREENHOUSE_VERSION} | Image: ghcr.io/cloudoperators/greenhouse:${APP_VERSION}"
+
+      - name: Resolve chart dependencies
+        run: helm dependency update charts/greenhouse
+
+      - name: Build greenhouse OCM bundle
+        working-directory: ocm
+        run: |
+          ocm add componentversions \
+            --addenv \
+            --file greenhouse-bundle.ctf \
+            --create \
+            greenhouse-component.yaml \
+            GREENHOUSE_VERSION=${{ steps.versions.outputs.greenhouse_version }} \
+            "GREENHOUSE_IMAGE_REF=${{ steps.versions.outputs.greenhouse_image_ref }}" \
+            "DASHBOARD_IMAGE_REF=${{ steps.versions.outputs.dashboard_image_ref }}"
+
+      - name: Log in to ghcr.io
+        uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # v3.3.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push greenhouse bundle to ghcr.io
+        working-directory: ocm
+        run: |
+          OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          ocm transfer ctf \
+            --copy-resources \
+            greenhouse-bundle.ctf \
+            oci://ghcr.io/${OWNER}/greenhouse
+
+      - name: Sign greenhouse component (keyless Sigstore)
+        working-directory: ocm
+        run: |
+          OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          cosign sign --yes \
+            ghcr.io/${OWNER}/greenhouse:${{ steps.versions.outputs.greenhouse_version }}
+
+      - name: Verify greenhouse bundle
+        working-directory: ocm
+        run: |
+          OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          ocm get componentversion \
+            --repo oci://ghcr.io/${OWNER}/greenhouse \
+            github.com/cloudoperators/greenhouse:${{ steps.versions.outputs.greenhouse_version }}
+          ocm get componentversion \
+            --repo oci://ghcr.io/${OWNER}/greenhouse \
+            github.com/cloudoperators/greenhouse/core:${{ steps.versions.outputs.greenhouse_version }}
+
+  # ── Job 2: prerequisites bundle ─────────────────────────────────────────────
+  build-prerequisites:
+    name: Build and push prerequisites bundle
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4
+
+      - name: Install OCM CLI
+        run: |
+          OCM_VERSION_CLEAN="${OCM_VERSION#v}"
+          curl -fsSL "https://github.com/open-component-model/ocm/releases/download/${OCM_VERSION}/ocm-${OCM_VERSION_CLEAN}-linux-amd64.tar.gz" \
+            -o /tmp/ocm.tar.gz
+          tar xzf /tmp/ocm.tar.gz -C /tmp/
+          sudo mv /tmp/ocm /usr/local/bin/
+          ocm version
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@dc72c7d5c4d10cd6bcb8cf6e3fd625a9e5e537da # v3.7.0
+
+      - name: Build prerequisites OCM bundle
+        working-directory: ocm
+        run: |
+          ocm add componentversions \
+            --addenv \
+            --file prereqs-bundle.ctf \
+            --create \
+            greenhouse-prerequisites-component.yaml \
+            CERT_MANAGER_VERSION=${{ env.CERT_MANAGER_VERSION }} \
+            FLUX_VERSION=${{ env.FLUX_VERSION }} \
+            KRO_VERSION=${{ env.KRO_VERSION }} \
+            OCM_CONTROLLER_VERSION=${{ env.OCM_CONTROLLER_VERSION }}
+
+      - name: Log in to ghcr.io
+        uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # v3.3.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push prerequisites bundle to ghcr.io
+        working-directory: ocm
+        run: |
+          OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          ocm transfer ctf \
+            --copy-resources \
+            prereqs-bundle.ctf \
+            oci://ghcr.io/${OWNER}/greenhouse-prerequisites
+
+      - name: Sign prerequisites component (keyless Sigstore)
+        working-directory: ocm
+        run: |
+          OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          cosign sign --yes \
+            ghcr.io/${OWNER}/greenhouse-prerequisites:${{ env.OCM_CONTROLLER_VERSION }}
+
+      - name: Verify prerequisites bundle
+        working-directory: ocm
+        run: |
+          OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          ocm get componentversion \
+            --repo oci://ghcr.io/${OWNER}/greenhouse-prerequisites \
+            github.com/cloudoperators/greenhouse-prerequisites:${{ env.OCM_CONTROLLER_VERSION }}
+          ocm get componentversion \
+            --repo oci://ghcr.io/${OWNER}/greenhouse-prerequisites \
+            github.com/cloudoperators/greenhouse/prerequisites/cert-manager:${{ env.CERT_MANAGER_VERSION }}
+          ocm get componentversion \
+            --repo oci://ghcr.io/${OWNER}/greenhouse-prerequisites \
+            github.com/cloudoperators/greenhouse/prerequisites/ocm-controller:${{ env.OCM_CONTROLLER_VERSION }}

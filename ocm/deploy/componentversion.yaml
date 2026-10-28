@@ -4,7 +4,7 @@
 # Retained for reference only; do NOT include in kustomization.yaml.
 #
 # OCM ComponentVersion — previously applied via kustomize (deploy/kustomization.yaml).
-# Watches the RBSC registry for the greenhouse product component and resolves
+# Watches the on-site registry for the greenhouse product component and resolves
 # the semver constraint to the latest matching version.
 apiVersion: delivery.ocm.software/v1alpha1
 kind: ComponentVersion
@@ -17,6 +17,6 @@ spec:
   version:
     semver: ">=0.18.0"
   repository:
-    url: ghcr.io/sofiyadesaisap/greenhouse-rbsc
+    url: <your-on-site-registry>
     secretRef:
       name: greenhouse-ocm-registry-creds

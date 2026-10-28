@@ -15,9 +15,10 @@
 # REQUIRES pods to be digest-pinned (@sha256). deploy/kro-rgd.yaml sets image.digest
 # for manager/idproxy/cors-proxy/authz/dashboard so they render repository@sha256.
 #
-# EXCEPTION — postgresql: the sapcc postgres image is pulled by TAG, has no digest knob,
-# and is NOT an OCM resource (not covered by the signature). It is exempted by registry
-# path. If you later bring postgres under OCM, remove the exception.
+# EXCEPTION — postgresql: the postgres image used by the postgresql subchart is pulled
+# by TAG, has no digest knob, and is NOT an OCM resource (not covered by the signature).
+# It is exempted by registry path prefix. If you later bring postgres under OCM, remove
+# the exception.
 #
 # Start in Audit; flip validationFailureAction to Enforce once the allowlist is populated
 # from a fresh signed build and observed clean.
@@ -46,7 +47,7 @@ spec:
               namespaces:
                 - greenhouse
                 - cert-manager
-                - ocm-system
+                - ocm-k8s-toolkit-system
       # Pull the signed-digest list from the ConfigMap into a policy variable.
       context:
         - name: allowed
@@ -55,12 +56,12 @@ spec:
             namespace: kyverno
       validate:
         message: >-
-          Image is not permitted: it must come from the RBSC registry, be pinned by
-          @sha256 digest, and that digest must appear in the OCM-signed allowlist
-          (ConfigMap kyverno/ocm-signed-image-digests). postgres (sapcc) is exempt.
+          Image is not permitted: it must be pinned by @sha256 digest and that digest
+          must appear in the OCM-signed allowlist
+          (ConfigMap kyverno/ocm-signed-image-digests). The postgres subchart image is exempt.
         foreach:
           - list: "request.object.spec.[initContainers, containers, ephemeralContainers][]"
-            # Skip the postgres exception: sapcc image, tag-pinned, not OCM-signed.
+            # Skip the postgres exception: tag-pinned, not OCM-signed.
             preconditions:
               all:
                 - key: "{{ contains(element.image, '/sapcc/') }}"
