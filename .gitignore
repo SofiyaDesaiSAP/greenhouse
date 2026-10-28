@@ -24,6 +24,9 @@ testbin/*
 
 !vendor/**/zz_generated.*
 
+# OCM build artifacts
+ocm/flux-install.yaml
+
 # editor and IDE paraphernalia
 .idea
 *.swp

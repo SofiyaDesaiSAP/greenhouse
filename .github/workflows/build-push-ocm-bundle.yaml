@@ -160,6 +160,14 @@ jobs:
           sudo mv /tmp/ocm /usr/local/bin/
           ocm version
 
+      - name: Download Flux install manifests
+        working-directory: ocm
+        run: |
+          curl -fsSL \
+            "https://github.com/fluxcd/flux2/releases/download/v${FLUX_VERSION}/install.yaml" \
+            -o flux-install.yaml
+          wc -c flux-install.yaml
+
       - name: Build prerequisites OCM bundle
         working-directory: ocm
         run: |

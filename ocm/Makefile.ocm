@@ -165,6 +165,10 @@ build-greenhouse:
 
 # Build prerequisites component only (cert-manager, flux, kro, ocm-controller).
 build-prerequisites:
+	@echo "Downloading Flux install manifests (v$(FLUX_VERSION))..."
+	curl -fsSL \
+	  "https://github.com/fluxcd/flux2/releases/download/v$(FLUX_VERSION)/install.yaml" \
+	  -o flux-install.yaml
 	rm -rf greenhouse-prerequisites-bundle.ctf
 	ocm add componentversions \
 	  --addenv \

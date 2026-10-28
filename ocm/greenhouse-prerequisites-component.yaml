@@ -48,8 +48,9 @@ components:
 
   # -------------------------------------------------------------------------
   # Prerequisite: flux2 (official install manifests)
-  # access type wget = external reference stored in CTF descriptor.
-  # The manifest is downloaded and embedded as an OCI blob during transfer.
+  # input.type: file embeds the downloaded YAML content directly in the CTF,
+  # ensuring the blob is present in the OCI registry after transfer (air-gap safe).
+  # The build workflow downloads flux-install.yaml before running ocm add componentversions.
   # -------------------------------------------------------------------------
   - name: github.com/cloudoperators/greenhouse/prerequisites/flux
     version: ${FLUX_VERSION}
@@ -62,9 +63,9 @@ components:
       - name: flux-install
         type: blob
         version: ${FLUX_VERSION}
-        access:
-          type: wget
-          url: https://github.com/fluxcd/flux2/releases/download/v${FLUX_VERSION}/install.yaml
+        input:
+          type: file
+          path: flux-install.yaml
           mediaType: application/yaml
 
   # -------------------------------------------------------------------------
