@@ -124,8 +124,12 @@ jobs:
         working-directory: ocm
         run: |
           OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
-          cosign sign --yes \
-            ghcr.io/${OWNER}/greenhouse:${{ steps.versions.outputs.greenhouse_version }}
+          ocm sign componentversions \
+            --keyless \
+            --signature greenhouse-release \
+            --algorithm sigstore-v2 \
+            --repo oci://ghcr.io/${OWNER}/greenhouse \
+            github.com/cloudoperators/greenhouse:${{ steps.versions.outputs.greenhouse_version }}
 
       - name: Verify greenhouse bundle
         working-directory: ocm
@@ -155,9 +159,6 @@ jobs:
           tar xzf /tmp/ocm.tar.gz -C /tmp/
           sudo mv /tmp/ocm /usr/local/bin/
           ocm version
-
-      - name: Install cosign
-        uses: sigstore/cosign-installer@dc72c7d5c4d10cd6bcb8cf6e3fd625a9e5e537da # v3.7.0
 
       - name: Build prerequisites OCM bundle
         working-directory: ocm
@@ -192,8 +193,12 @@ jobs:
         working-directory: ocm
         run: |
           OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
-          cosign sign --yes \
-            ghcr.io/${OWNER}/greenhouse-prerequisites:${{ env.OCM_CONTROLLER_VERSION }}
+          ocm sign componentversions \
+            --keyless \
+            --signature greenhouse-release \
+            --algorithm sigstore-v2 \
+            --repo oci://ghcr.io/${OWNER}/greenhouse-prerequisites \
+            github.com/cloudoperators/greenhouse-prerequisites:${{ env.OCM_CONTROLLER_VERSION }}
 
       - name: Verify prerequisites bundle
         working-directory: ocm
