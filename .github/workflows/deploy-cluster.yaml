@@ -1,6 +1,6 @@
-name: Deploy Greenhouse to green2
+name: Deploy Greenhouse to Cluster
 
-# Deploys greenhouse to the green2 Gardener cluster from scratch.
+# Deploys greenhouse to a target Kubernetes cluster from scratch.
 # ghcr.io/cloudoperators acts as both the central and on-site registry — no transfer step.
 #
 # Bootstrap order on a fresh cluster:
@@ -13,7 +13,7 @@ name: Deploy Greenhouse to green2
 # Flux/kro OCIRepositories pull from public registries, so we install them directly first.
 #
 # Required GitHub secrets (Settings → Secrets → Actions):
-#   KUBECONFIG               base64-encoded content of the green2 kubeconfig
+#   KUBECONFIG               base64-encoded content of the target cluster kubeconfig
 #   GREENHOUSE_VALUES_YAML   Full contents of greenhouse-values.yaml (the Helm values)
 
 on:
@@ -23,6 +23,10 @@ on:
         description: 'Semver constraint for the greenhouse OCM component'
         required: false
         default: '>=0.23.0'
+      runs_on:
+        description: 'Runner label (use a self-hosted runner with cluster network access)'
+        required: false
+        default: 'ubuntu-latest'
 
 permissions:
   contents: read
@@ -35,8 +39,8 @@ env:
 jobs:
 
   deploy:
-    name: Deploy to green2
-    runs-on: ubuntu-latest
+    name: Deploy to cluster
+    runs-on: ${{ github.event.inputs.runs_on || 'ubuntu-latest' }}
 
     steps:
       - name: Checkout
