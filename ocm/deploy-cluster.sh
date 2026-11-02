@@ -106,7 +106,7 @@ fi
 [[ -n "${KRO_VERSION}" ]]  || die "KRO_VERSION not set and could not be discovered from ${PREREQS_BUNDLE_REGISTRY}"
 ok "Flux ${FLUX_VERSION}, kro ${KRO_VERSION}"
 
- ────────────────────────────
+# ── Step 2: Install Flux ─────────────────────────────────────────────────────
 step "Step 2 — Installing Flux ${FLUX_VERSION} from on-site registry"
 
 if kubectl get deployment helm-controller -n flux-system >/dev/null 2>&1; then

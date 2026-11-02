@@ -173,6 +173,11 @@ build-prerequisites:
 	curl -fsSL \
 	  "https://github.com/fluxcd/flux2/releases/download/v$(FLUX_RESOLVED)/install.yaml" \
 	  -o flux-install.yaml
+	@echo "Downloading kro chart v$(KRO_VERSION)..."
+	helm pull oci://registry.k8s.io/kro/charts/kro \
+	  --version $(KRO_VERSION) \
+	  --destination .
+	mv kro-$(KRO_VERSION).tgz kro-chart.tgz
 	rm -rf greenhouse-prerequisites-bundle.ctf
 	ocm add componentversions \
 	  --addenv \

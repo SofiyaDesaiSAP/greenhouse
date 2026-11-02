@@ -160,6 +160,9 @@ jobs:
           sudo mv /tmp/ocm /usr/local/bin/
           ocm version
 
+      - name: Set up Helm
+        uses: azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2 # v5.0.0
+
       - name: Download Flux install manifests
         working-directory: ocm
         run: |
@@ -174,6 +177,15 @@ jobs:
             "https://github.com/fluxcd/flux2/releases/download/v${FLUX_RESOLVED}/install.yaml" \
             -o flux-install.yaml
           wc -c flux-install.yaml
+
+      - name: Download kro chart
+        working-directory: ocm
+        run: |
+          helm pull oci://registry.k8s.io/kro/charts/kro \
+            --version "${{ env.KRO_VERSION }}" \
+            --destination .
+          mv kro-${{ env.KRO_VERSION }}.tgz kro-chart.tgz
+          wc -c kro-chart.tgz
 
       - name: Build prerequisites OCM bundle
         working-directory: ocm

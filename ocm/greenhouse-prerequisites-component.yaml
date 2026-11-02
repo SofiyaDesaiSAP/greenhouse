@@ -71,6 +71,14 @@ components:
   # -------------------------------------------------------------------------
   # Prerequisite: kro (Kubernetes Resource Orchestrator)
   # -------------------------------------------------------------------------
+  # -------------------------------------------------------------------------
+  # Prerequisite: kro (Kubernetes Resource Orchestrator)
+  # input.type: file embeds the downloaded chart tgz directly in the CTF.
+  # The build workflow runs `helm pull oci://registry.k8s.io/kro/charts/kro`
+  # before `ocm add componentversions` to produce kro-chart.tgz.
+  # Using blob type (not helmChart) ensures `ocm download resources` returns
+  # the raw tgz bytes that helm can load directly — no OCI wrapper to unpack.
+  # -------------------------------------------------------------------------
   - name: github.com/cloudoperators/greenhouse/prerequisites/kro
     version: ${KRO_VERSION}
     provider:
@@ -80,13 +88,12 @@ components:
         value: prerequisite
     resources:
       - name: kro-chart
-        type: helmChart
+        type: blob
         version: ${KRO_VERSION}
         input:
-          type: helm
-          path: kro
-          helmRepository: oci://registry.k8s.io/kro/charts
-          version: ${KRO_VERSION}
+          type: file
+          path: kro-chart.tgz
+          mediaType: application/gzip
 
   # -------------------------------------------------------------------------
   # Prerequisite: ocm-controller

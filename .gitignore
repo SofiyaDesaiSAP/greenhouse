@@ -26,6 +26,7 @@ testbin/*
 
 # OCM build artifacts
 ocm/flux-install.yaml
+ocm/kro-chart.tgz
 
 # editor and IDE paraphernalia
 .idea
