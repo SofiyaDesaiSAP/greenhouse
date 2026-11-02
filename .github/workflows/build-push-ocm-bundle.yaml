@@ -163,8 +163,15 @@ jobs:
       - name: Download Flux install manifests
         working-directory: ocm
         run: |
+          # FLUX_VERSION in this workflow may lag actual releases.
+          # Resolve the latest published release so the URL always exists.
+          FLUX_RESOLVED=$(curl -fsSL \
+            "https://api.github.com/repos/fluxcd/flux2/releases/latest" \
+            | jq -r '.tag_name | ltrimstr("v")')
+          echo "FLUX_VERSION=${FLUX_RESOLVED}" >> $GITHUB_ENV
+          echo "Resolved Flux version: ${FLUX_RESOLVED}"
           curl -fsSL \
-            "https://github.com/fluxcd/flux2/releases/download/v${FLUX_VERSION}/install.yaml" \
+            "https://github.com/fluxcd/flux2/releases/download/v${FLUX_RESOLVED}/install.yaml" \
             -o flux-install.yaml
           wc -c flux-install.yaml
 

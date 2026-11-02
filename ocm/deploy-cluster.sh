@@ -21,7 +21,10 @@
 #   COMPONENT_VERSION          Semver constraint (default: >=0.23.0)
 #   POSTGRES_REGISTRY          Registry prefix for postgres images
 #                              (default: ${ON_SITE_REGISTRY}/sapcc)
-#   FLUX_VERSION               Must match version in the prereqs OCM bundle (default: 2.15.0)
+#   FLUX_VERSION               Must match version in the prereqs OCM bundle.
+#                              Set by the build workflow at bundle-build time (dynamic resolution).
+#                              Check the bundle: ocm get resources --repo oci://<PREREQS_BUNDLE_REGISTRY> \
+#                                github.com/cloudoperators/greenhouse-prerequisites:... -o json
 #   KRO_VERSION                Must match version in the prereqs OCM bundle (default: 0.9.4)
 #   PREREQS_BUNDLE_REGISTRY    Where the prerequisites OCM bundle was pushed.
 #                              ghcr.io (default): ${ON_SITE_REGISTRY}/greenhouse-prerequisites
@@ -37,8 +40,8 @@ set -euo pipefail
 
 # ── Defaults ─────────────────────────────────────────────────────────────────
 COMPONENT_VERSION="${COMPONENT_VERSION:->=0.23.0}"
-FLUX_VERSION="${FLUX_VERSION:-2.15.0}"
-KRO_VERSION="${KRO_VERSION:-0.9.4}"
+FLUX_VERSION="${FLUX_VERSION:-}"
+KRO_VERSION="${KRO_VERSION:-}"
 
 # Two separate bundle registries (ghcr.io uses distinct repos per bundle;
 # a single on-site registry like Keppel stores both under the same base URL).
@@ -81,7 +84,29 @@ step "Step 1 — Verifying cluster connectivity"
 kubectl cluster-info
 ok "Cluster reachable"
 
-# ── Step 2: Install Flux from on-site OCM registry ────────────────────────────
+# ── Discover component versions from prereqs bundle ───────────────────────────
+# FLUX_VERSION and KRO_VERSION must match exactly what was embedded in the bundle.
+# Auto-discover from the OCM registry so the operator doesn't have to look them up.
+step "Discovering prereqs versions from on-site registry"
+PREREQS_REFS=$(OCM_REGISTRY_CREDS="${REGISTRY_USER}:${REGISTRY_TOKEN}" \
+  ocm get componentversion \
+    --repo "oci://${PREREQS_BUNDLE_REGISTRY}" \
+    "github.com/cloudoperators/greenhouse-prerequisites" \
+    -o json 2>/dev/null \
+  | jq -r '.items[0].component.componentReferences[]' 2>/dev/null || echo "")
+
+if [[ -n "${PREREQS_REFS}" ]]; then
+  [[ -z "${FLUX_VERSION}" ]] && \
+    FLUX_VERSION=$(echo "${PREREQS_REFS}" | jq -r 'select(.name=="flux") | .version' || echo "")
+  [[ -z "${KRO_VERSION}" ]] && \
+    KRO_VERSION=$(echo "${PREREQS_REFS}" | jq -r 'select(.name=="kro") | .version' || echo "")
+fi
+
+[[ -n "${FLUX_VERSION}" ]] || die "FLUX_VERSION not set and could not be discovered from ${PREREQS_BUNDLE_REGISTRY}"
+[[ -n "${KRO_VERSION}" ]]  || die "KRO_VERSION not set and could not be discovered from ${PREREQS_BUNDLE_REGISTRY}"
+ok "Flux ${FLUX_VERSION}, kro ${KRO_VERSION}"
+
+ ────────────────────────────
 step "Step 2 — Installing Flux ${FLUX_VERSION} from on-site registry"
 
 if kubectl get deployment helm-controller -n flux-system >/dev/null 2>&1; then
