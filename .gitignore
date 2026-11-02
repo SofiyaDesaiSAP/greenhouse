@@ -48,6 +48,10 @@ dist/**
 
 # e2e local cluster kubeconfig files
 ocm/pre-demo-reading.md
+ocm/pre-demo-reading-old.md
+ocm/pre-demo-reading-old2.md
+ocm/architecture-changes-review-status.md
+ocm/review-comments-sprint-backlog.md
 ocmgreen-kubeconfig.yaml
 kubeconfig-for-shoot.yaml
 
