@@ -13,9 +13,15 @@
 #   ON_SITE_REGISTRY        Base OCI registry URL
 #                           Connected:   ghcr.io/cloudoperators
 #                           Air-gapped:  keppel.eu-de-1.cloud.sap/myspace
-#   REGISTRY_USER           Username for the on-site registry
-#   REGISTRY_TOKEN          Password / token for the on-site registry
 #   GREENHOUSE_VALUES_YAML  Path to greenhouse-values.yaml (Helm values file)
+#
+# OPTIONAL environment variables:
+#   REGISTRY_USER           Username for the on-site registry.
+#                           Not required when the registry allows anonymous pulls
+#                           (e.g. keppel.global.cloud.sap repos are public).
+#   REGISTRY_TOKEN          Password / token for the on-site registry.
+#                           When unset: OCM pulls anonymously and no imagePullSecrets
+#                           secret or SA patching is applied to the cluster.
 #
 # OPTIONAL environment variables:
 #   COMPONENT_VERSION          Semver constraint (default: >=0.23.0)
@@ -42,6 +48,8 @@ set -euo pipefail
 COMPONENT_VERSION="${COMPONENT_VERSION:->=0.23.0}"
 FLUX_VERSION="${FLUX_VERSION:-}"
 KRO_VERSION="${KRO_VERSION:-}"
+REGISTRY_USER="${REGISTRY_USER:-}"
+REGISTRY_TOKEN="${REGISTRY_TOKEN:-}"
 
 # Two separate bundle registries (ghcr.io uses distinct repos per bundle;
 # a single on-site registry like Keppel stores both under the same base URL).
@@ -57,7 +65,7 @@ die()  { echo -e "${RED}✗ $*${RESET}" >&2; exit 1; }
 # ── Validate ──────────────────────────────────────────────────────────────────
 step "Validating prerequisites"
 
-for var in KUBECONFIG ON_SITE_REGISTRY REGISTRY_USER REGISTRY_TOKEN GREENHOUSE_VALUES_YAML; do
+for var in KUBECONFIG ON_SITE_REGISTRY GREENHOUSE_VALUES_YAML; do
   [[ -n "${!var:-}" ]] || die "Required env var \$${var} is not set"
 done
 
@@ -72,12 +80,17 @@ POSTGRES_REGISTRY="${POSTGRES_REGISTRY:-${ON_SITE_REGISTRY}/sapcc}"
 TMP=$(mktemp -d)
 trap 'rm -rf "${TMP}"' EXIT
 
+# Export OCM registry credentials once. When REGISTRY_TOKEN is unset the variable
+# is not exported and OCM pulls anonymously (public registries like Keppel).
+[[ -n "${REGISTRY_TOKEN}" ]] && export OCM_REGISTRY_CREDS="${REGISTRY_USER}:${REGISTRY_TOKEN}"
+
 ok "All checks passed"
 echo "  ON_SITE_REGISTRY          = ${ON_SITE_REGISTRY}"
 echo "  PREREQS_BUNDLE_REGISTRY   = ${PREREQS_BUNDLE_REGISTRY}"
 echo "  GH_BUNDLE_REGISTRY        = ${GH_BUNDLE_REGISTRY}"
 echo "  KUBECONFIG                = ${KUBECONFIG}"
 echo "  VALUES                    = ${GREENHOUSE_VALUES_YAML}"
+echo "  AUTH                      = ${REGISTRY_TOKEN:+authenticated (${REGISTRY_USER})}${REGISTRY_TOKEN:-anonymous}"
 
 # ── Step 1: Verify cluster connectivity ───────────────────────────────────────
 step "Step 1 — Verifying cluster connectivity"
@@ -88,8 +101,7 @@ ok "Cluster reachable"
 # FLUX_VERSION and KRO_VERSION must match exactly what was embedded in the bundle.
 # Auto-discover from the OCM registry so the operator doesn't have to look them up.
 step "Discovering prereqs versions from on-site registry"
-PREREQS_REFS=$(OCM_REGISTRY_CREDS="${REGISTRY_USER}:${REGISTRY_TOKEN}" \
-  ocm get componentversion \
+PREREQS_REFS=$(ocm get componentversion \
     --repo "oci://${PREREQS_BUNDLE_REGISTRY}" \
     "github.com/cloudoperators/greenhouse-prerequisites" \
     -o json 2>/dev/null \
@@ -113,7 +125,6 @@ if kubectl get deployment helm-controller -n flux-system >/dev/null 2>&1; then
   ok "Flux already installed — skipping"
 else
   echo "Downloading flux-install manifest from OCM registry..."
-  OCM_REGISTRY_CREDS="${REGISTRY_USER}:${REGISTRY_TOKEN}" \
   ocm download resources \
     --repo "oci://${PREREQS_BUNDLE_REGISTRY}" \
     "github.com/cloudoperators/greenhouse/prerequisites/flux:${FLUX_VERSION}" \
@@ -141,7 +152,6 @@ if kubectl get deployment kro-controller-manager -n kro-system >/dev/null 2>&1; 
   ok "kro already installed — skipping"
 else
   echo "Downloading kro chart from OCM registry..."
-  OCM_REGISTRY_CREDS="${REGISTRY_USER}:${REGISTRY_TOKEN}" \
   ocm download resources \
     --repo "oci://${PREREQS_BUNDLE_REGISTRY}" \
     "github.com/cloudoperators/greenhouse/prerequisites/kro:${KRO_VERSION}" \
@@ -160,14 +170,17 @@ step "Step 5 — Creating greenhouse namespace and registry secret"
 
 kubectl create namespace greenhouse --dry-run=client -o yaml | kubectl apply -f -
 
-kubectl create secret docker-registry greenhouse-ocm-registry-creds \
-  --namespace greenhouse \
-  --docker-server="${ON_SITE_REGISTRY%%/*}" \
-  --docker-username="${REGISTRY_USER}" \
-  --docker-password="${REGISTRY_TOKEN}" \
-  --dry-run=client -o yaml | kubectl apply -f -
-
-ok "Namespace and registry secret ready"
+if [[ -n "${REGISTRY_TOKEN}" ]]; then
+  kubectl create secret docker-registry greenhouse-ocm-registry-creds \
+    --namespace greenhouse \
+    --docker-server="${ON_SITE_REGISTRY%%/*}" \
+    --docker-username="${REGISTRY_USER}" \
+    --docker-password="${REGISTRY_TOKEN}" \
+    --dry-run=client -o yaml | kubectl apply -f -
+  ok "Namespace and registry secret ready"
+else
+  ok "Namespace ready (no registry secret — anonymous pulls)"
+fi
 
 # ── Step 6: Apply kro RGDs ────────────────────────────────────────────────────
 step "Step 6 — Applying kro ResourceGraphDefinitions"
@@ -231,16 +244,14 @@ step "Step 10 — Applying GreenhouseStack instance"
 # with what was actually transferred. Wrong digests cause NotFound pull errors.
 # Mirrors what `make -f ocm/Makefile.ocm patch-instance` does.
 step "  Reading image digests from on-site registry"
-GH_VERSION=$(OCM_REGISTRY_CREDS="${REGISTRY_USER}:${REGISTRY_TOKEN}" \
-  ocm get componentversion \
+GH_VERSION=$(ocm get componentversion \
     --repo "oci://${GH_BUNDLE_REGISTRY}" \
     "github.com/cloudoperators/greenhouse" \
     -o json 2>/dev/null \
   | jq -r '[.items[].component.version] | sort | last' 2>/dev/null || echo "")
 
 if [[ -n "${GH_VERSION}" ]]; then
-  DIGESTS_JSON=$(OCM_REGISTRY_CREDS="${REGISTRY_USER}:${REGISTRY_TOKEN}" \
-    ocm get resources \
+  DIGESTS_JSON=$(ocm get resources \
       "oci://${GH_BUNDLE_REGISTRY}//github.com/cloudoperators/greenhouse/core:${GH_VERSION}" \
       -o json 2>/dev/null || echo "")
   GH_DIGEST=$(echo "${DIGESTS_JSON}" | jq -r \
@@ -291,16 +302,21 @@ ok "HelmRelease/greenhouse created"
 # Patch imagePullSecrets on all ServiceAccounts immediately after HelmRelease
 # is created — greenhouse chart does not propagate global.imagePullSecrets to
 # all subcharts, so pods start in ImagePullBackOff on the first install attempt.
+# Skipped when REGISTRY_TOKEN is unset (public/anonymous registry — no pull secret needed).
 # No rollout restart here: restarting deployments mid-install interferes with
 # Helm's resource tracking. Let pods retry naturally; Step 11 handles retry.
-step "Patching imagePullSecrets on all ServiceAccounts"
-for sa in $(kubectl get serviceaccount -n greenhouse \
-    -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do
-  kubectl patch serviceaccount "${sa}" -n greenhouse --type=merge \
-    -p '{"imagePullSecrets":[{"name":"greenhouse-ocm-registry-creds"}]}' \
-    >/dev/null 2>&1 || true
-done
-ok "imagePullSecrets patched"
+if [[ -n "${REGISTRY_TOKEN}" ]]; then
+  step "Patching imagePullSecrets on all ServiceAccounts"
+  for sa in $(kubectl get serviceaccount -n greenhouse \
+      -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do
+    kubectl patch serviceaccount "${sa}" -n greenhouse --type=merge \
+      -p '{"imagePullSecrets":[{"name":"greenhouse-ocm-registry-creds"}]}' \
+      >/dev/null 2>&1 || true
+  done
+  ok "imagePullSecrets patched"
+else
+  ok "Skipping imagePullSecrets patching (anonymous registry)"
+fi
 
 # ── Step 11: Wait for greenhouse ──────────────────────────────────────────────
 step "Step 11 — Waiting for greenhouse HelmRelease (up to 15m)"

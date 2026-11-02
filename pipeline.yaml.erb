@@ -1,0 +1,453 @@
+<% Dir.glob(File.join(File.dirname(__FILE__), "/tasks/*.yaml")).map{|f| File.basename(f, ".yaml")}.each do |task| %>
+<%= task %>: &<%= task%>
+  <%= File.read(File.join(File.dirname(__FILE__), "/tasks/#{task}.yaml")).gsub("\n", "\n  ") %>
+<% end %>
+
+# Clusters to which Greenhouse core and extensions shall be deployed.
+<%
+  CLUSTERS = [
+    { name: "greenhouse-qa", region: "eu-nl-1", organization: false},
+    { name: "greenhouse-playground", region: "eu-nl-1", gates: "greenhouse-qa-deploy", trigger: false, organization: false },
+    { name: "greenhouse-p-eu-de-1", region: "eu-de-1", gates: "greenhouse-playground-deploy", trigger: false, release_gates: "greenhouse-playground-deploy" },
+  ]
+%>
+
+resource_types:
+  - name: git-proxy
+    type: registry-image
+    check_every: 24h
+    source:
+      repository: keppel.eu-de-1.cloud.sap/ccloud/concourse-git-resource-proxy
+      tag: latest
+
+  - name: release
+    type: docker-image
+    check_every: 24h
+    source:
+      repository: keppel.eu-de-1.cloud.sap/ccloud/concourse-release-resource
+      tag: v2.latest
+
+resources:
+- name: greenhouse-ghcr-image
+  type: docker-image
+  source:
+    repository: ghcr.io/cloudoperators/greenhouse
+    tag: main
+    check_every: 1h
+
+- name: greenhouse-charts.git
+  type: git
+  webhook_token: bleep-bloop
+  source:
+    uri: https://github.com/cloudoperators/greenhouse.git
+    username: ((github-access-token/sapcc-bot))
+    password: x-oauth-basic
+    branch: main
+    paths:
+      - 'charts/**'
+
+- name: greenhouse-charts-release.git
+  type: git
+  webhook_token: bleep-bloop
+  source:
+    uri: https://github.com/cloudoperators/greenhouse.git
+    username: ((github-access-token/sapcc-bot))
+    password: x-oauth-basic
+    branch: helm-chart-0.23.0 # This is the release tag
+    paths:
+      - 'charts/**'
+
+- name: greenhouse-org-charts.git
+  type: git-proxy
+  webhook_token: random
+  source:
+    uri: https://github.com/sapcc/helm-charts.git
+    username: ((github-access-token/sapcc-bot))
+    password: x-oauth-basic
+    branch: master
+    paths:
+      - 'system/greenhouse-organization/**'
+
+- name: greenhouse-ccloud-charts.git
+  type: git
+  webhook_token: bleep-bloop
+  source:
+    uri: https://github.com/sapcc/helm-charts.git
+    username: ((github-access-token/sapcc-bot))
+    password: x-oauth-basic
+    branch: master
+    paths:
+      - 'system/greenhouse-ccloud/**'
+
+- name: secrets-script.git
+  type: git-proxy
+  webhook_token: bleep-bloop
+  check_every: 6h
+  source:
+    uri: git@github.wdf.sap.corp:cc/secrets.git
+    private_key: ((github-private-key/cc-secrets))
+    branch: master
+    paths:
+      - 'ci/greenhouse/*'
+      - 'ci/shared/*'
+
+- name: secrets.git
+  type: git-proxy
+  webhook_token: bleep-bloop
+  check_every: 1h
+  source:
+    uri: git@github.wdf.sap.corp:cc/secrets.git
+    private_key: ((github-private-key/cc-secrets))
+    branch: master
+    paths:
+      - '*/values/globals.yaml'
+      - '*/values/greenhouse.yaml'
+<% CLUSTERS.each do |cluster| %>
+      - '<%= cluster[:region] %>/values/<%= cluster[:name] %>.yaml'
+      - '<%= cluster[:region] %>/values/<%= cluster[:name] %>-ccloud.yaml'
+<% end %>
+
+groups:
+  - name: build
+    jobs:
+    - readme
+<% CLUSTERS.each do |cluster| %>
+    - <%= cluster[:name] %>-diff
+    - <%= cluster[:name] %>-deploy
+<% end %>
+
+  - name: greenhouse-organization
+    jobs:
+<% CLUSTERS.each do |cluster| %>
+    - <%= cluster[:name] %>-organization-diff
+    - <%= cluster[:name] %>-organization-deploy
+<% end %>
+
+  # This groups jobs related to the deployment of the CCloud organization.
+  # TODO: Move to separate repository and pipeline.
+  - name: ccloud
+    jobs:
+<% CLUSTERS.each do |cluster| %>
+<% next if cluster[:organization] == false %>
+    - <%= cluster[:name] %>-ccloud-diff
+    - <%= cluster[:name] %>-ccloud-deploy
+<% end %>
+
+
+jobs:
+- name: readme
+  serial: true
+  plan:
+    - task: describe-this-pipeline
+      config:
+        platform: 'linux'
+        image_resource: &alpine-latest
+          type: docker-image
+          source:
+            repository: alpine
+            tag: latest
+        run:
+          path: /bin/echo
+          args:
+            - -e
+            - '\t    This pipeline is defined at: https://github.wdf.sap.corp/cc/greenhouse/tree/main/ci/\n'
+
+<% CLUSTERS.each do |cluster| %>
+- name: <%= cluster[:name] %>-diff
+  public: true
+  plan:
+    - in_parallel:
+      - get: secrets.git
+        trigger: true
+      - get: secrets-script.git
+    <% if cluster[:name] != "greenhouse-qa" %>
+      - get: greenhouse-charts-release.git
+        trigger: true
+        passed: [ <%= cluster.fetch(:release_gates, '') %> ]
+    <% else %>
+      - get: greenhouse-charts.git
+        trigger: true
+        passed: [ <%= cluster.fetch(:gates, '') %> ]
+      - get: greenhouse-ghcr-image
+        trigger: true
+    - load_var: greenhouse-digest
+      file: greenhouse-ghcr-image/digest
+      reveal: true
+    <% end %>
+    - task: get-vault-token
+      file: secrets.git/ci/shared/task-get-vault-jwt.yaml
+    - load_var: vault-jwt
+      file: get-vault-jwt-output/vault-jwt
+    - in_parallel:
+      - task: kustomize-diff
+        config:
+          <<: *kustomize-diff
+        input_mapping:
+        <% if cluster[:name] == "greenhouse-qa" %>
+          source.git: greenhouse-charts.git
+        <% else %>
+          source.git: greenhouse-charts-release.git
+        <% end %>
+        params:
+          CONTEXT: <%= cluster[:name] %>
+          NAMESPACE: greenhouse
+          REGION: <%= cluster[:region] %>
+          DIR: charts/manager/crds
+          GITHUB_TOKEN: ((github-access-token/sapcc-bot))
+          KUBELOGON_TOKEN: ((.:vault-jwt))
+      - task: helm-diff
+        file: secrets-script.git/ci/shared/task-helm-diff.yaml
+        input_mapping:
+        <% if cluster[:name] == "greenhouse-qa" %>
+          helm-charts.git: greenhouse-charts.git
+        <% else %>
+          helm-charts.git: greenhouse-charts-release.git
+        <% end %>
+          app.version: greenhouse.image
+        params:
+        <% if cluster[:name] == "greenhouse-qa" %>
+          ADD_HELM_ARGS: >
+            --set idproxy.image.digest=((.:greenhouse-digest))
+            --set cors-proxy.image.digest=((.:greenhouse-digest))
+            --set manager.controllerManager.image.digest=((.:greenhouse-digest))
+            --set authz.image.digest=((.:greenhouse-digest))
+        <% end %>
+          CHART_PATH: charts/greenhouse
+          RELEASE: greenhouse
+          NAMESPACE: greenhouse
+          REGION: <%= cluster[:region] %>
+          CONTEXT: <%= cluster[:name] %>
+          KUBELOGON_FETCH_JWT: "true"
+          TAG_VARIABLE: image.tag
+          TAG_FILE: tag
+          VALUES: local:globals global:greenhouse local:<%= cluster[:name] %>
+          HELM_MAJOR_VERSION: 3
+          VAULT_ROLE_ID:      ((auth.role_id))
+          VAULT_SECRET_ID:    ((auth.secret_id))
+    <% if cluster[:name] != "greenhouse-p-eu-de-1" %>
+    - task: replicate-changed-images
+      file: secrets-script.git/ci/shared/task-replicate-changed-images.yaml
+      params:
+      # anonymous pull for mirrors is not possible outside of eu-de-1
+        REGION: 'eu-de-1'
+    <% end %>
+    - task: replicate-changed-images
+      file: secrets-script.git/ci/shared/task-replicate-changed-images.yaml
+      params:
+        REGION: <%= cluster[:region] %>
+- name: <%= cluster[:name] %>-deploy
+  public: true
+  plan:
+    - in_parallel:
+      - get: secrets.git
+        trigger: <%= cluster.fetch(:trigger, true) %>
+        passed: [ <%= cluster[:name] %>-diff ]
+      - get: secrets-script.git
+    <% if cluster[:name] != "greenhouse-qa" %>
+      - get: greenhouse-charts-release.git
+        passed: [ <%= cluster.fetch(:release_gates, '') %> ]
+    <% else %>
+      - get: greenhouse-charts.git
+        trigger: <%= cluster.fetch(:trigger, true) %>
+        passed: [ <%= cluster[:name] %>-diff ]
+      - get: greenhouse-ghcr-image
+        passed: [ <%= cluster[:name] %>-diff ]
+        trigger: <%= cluster.fetch(:trigger, true) %>
+        params:
+          skip_download: true
+    - load_var: greenhouse-digest
+      file: greenhouse-ghcr-image/digest
+      reveal: true
+    <% end %>
+    - task: get-vault-token
+      file: secrets.git/ci/shared/task-get-vault-jwt.yaml
+    - load_var: vault-jwt
+      file: get-vault-jwt-output/vault-jwt
+    - task: kustomize-apply
+      config:
+        <<: *kustomize-apply
+      input_mapping:
+        <% if cluster[:name] == "greenhouse-qa" %>
+          source.git: greenhouse-charts.git
+        <% else %>
+          source.git: greenhouse-charts-release.git
+        <% end %>
+      params:
+        CONTEXT: <%= cluster[:name] %>
+        NAMESPACE: greenhouse
+        REGION: <%= cluster[:region] %>
+        DIR: charts/manager/crds
+        GITHUB_TOKEN: ((github-access-token/sapcc-bot))
+        KUBELOGON_TOKEN: ((.:vault-jwt))
+    - task: helm-deploy
+      file: secrets-script.git/ci/shared/task-helm-upgrade.yaml
+      input_mapping:
+      <% if cluster[:name] == "greenhouse-qa" %>
+        helm-charts.git: greenhouse-charts.git
+      <% else %>
+        helm-charts.git: greenhouse-charts-release.git
+      <% end %>
+        app.version: greenhouse.image
+      params:
+       <% if cluster[:name] == "greenhouse-qa" %>
+        ADDITIONAL_HELM_ARGS: >
+          --set idproxy.image.digest=((.:greenhouse-digest))
+          --set cors-proxy.image.digest=((.:greenhouse-digest))
+          --set manager.controllerManager.image.digest=((.:greenhouse-digest))
+          --set authz.image.digest=((.:greenhouse-digest))
+        <% end %>
+        CHART_PATH: charts/greenhouse
+        RELEASE: greenhouse
+        NAMESPACE: greenhouse
+        REGION: <%= cluster[:region] %>
+        CONTEXT: <%= cluster[:name] %>
+        KUBELOGON_FETCH_JWT: "true"
+        TAG_VARIABLE: image.tag
+        TAG_FILE: tag
+        VALUES: local:globals global:greenhouse local:<%= cluster[:name] %>
+        HELM_MAJOR_VERSION: 3
+        VAULT_ROLE_ID:      ((auth.role_id))
+        VAULT_SECRET_ID:    ((auth.secret_id))
+
+<% end %>
+
+#########################################
+#                                       #
+# CCloud deployment                     #
+#                                       #
+#########################################
+
+# This groups jobs related to the deployment of the CCloud organization.
+# TODO: Move to separate repository and pipeline.
+
+<% CLUSTERS.each do |cluster| %>
+  <% next if cluster[:organization] == false %>
+- name: <%= cluster[:name] %>-ccloud-diff
+  public: true
+  plan:
+    - in_parallel:
+      - get: greenhouse-ccloud-charts.git
+        trigger: true
+      - get: secrets.git
+        trigger: true
+      - get: secrets-script.git
+    - task: helm-diff
+      file: secrets-script.git/ci/shared/task-helm-diff.yaml
+      input_mapping:
+        helm-charts.git: greenhouse-ccloud-charts.git
+      params:
+        CHART_PATH: system/greenhouse-ccloud
+        RELEASE: ccloud
+        NAMESPACE: ccloud
+        REGION: <%= cluster[:region] %>
+        CONTEXT: <%= cluster[:name] %>
+        KUBELOGON_FETCH_JWT: "true"
+        TAG_VARIABLE: image.tag
+        TAG_FILE: tag
+        VALUES: local:globals local:<%= cluster[:name] %>-ccloud
+        HELM_MAJOR_VERSION: 3
+        VAULT_ROLE_ID:      ((auth.role_id))
+        VAULT_SECRET_ID:    ((auth.secret_id))
+
+- name: <%= cluster[:name] %>-ccloud-deploy
+  public: true
+  plan:
+    - in_parallel:
+      - get: greenhouse-ccloud-charts.git
+        trigger: false
+        passed: [ <%= cluster[:name] %>-ccloud-diff ]
+      - get: secrets.git
+        trigger: false
+        passed: [ <%= cluster[:name] %>-ccloud-diff ]
+      - get: secrets-script.git
+    - task: helm-deploy
+      file: secrets-script.git/ci/shared/task-helm-upgrade.yaml
+      input_mapping:
+        helm-charts.git: greenhouse-ccloud-charts.git
+      params:
+        CHART_PATH: system/greenhouse-ccloud
+        RELEASE: ccloud
+        NAMESPACE: ccloud
+        REGION: <%= cluster[:region] %>
+        CONTEXT: <%= cluster[:name] %>
+        KUBELOGON_FETCH_JWT: "true"
+        TAG_VARIABLE: image.tag
+        TAG_FILE: tag
+        VALUES: local:globals local:<%= cluster[:name] %>-ccloud
+        HELM_MAJOR_VERSION: 3
+        VAULT_ROLE_ID:      ((auth.role_id))
+        VAULT_SECRET_ID:    ((auth.secret_id))
+
+<% end %>
+
+
+#########################################
+#                                       #
+# Greenhouse Organization deployment    #
+#                                       #
+#########################################
+
+# This groups jobs related to the deployment of the CCloud organization.
+# TODO: Move to separate repository and pipeline.
+
+<% CLUSTERS.each do |cluster| %>
+- name: <%= cluster[:name] %>-organization-diff
+  public: true
+  plan:
+    - in_parallel:
+      - get: greenhouse-org-charts.git
+        trigger: true
+        <% if cluster[:name] != "greenhouse-qa" %>
+        passed: [ "greenhouse-qa-organization-deploy" ]
+        <% end %>
+      - get: secrets.git
+        trigger: true
+      - get: secrets-script.git
+    - task: helm-diff
+      file: secrets-script.git/ci/shared/task-helm-diff.yaml
+      input_mapping:
+        helm-charts.git: greenhouse-org-charts.git
+      params:
+        CHART_PATH: system/greenhouse-organization
+        RELEASE: greenhouse-organization
+        NAMESPACE: greenhouse
+        REGION: <%= cluster[:region] %>
+        CONTEXT: <%= cluster[:name] %>
+        KUBELOGON_FETCH_JWT: "true"
+        TAG_VARIABLE: image.tag
+        TAG_FILE: tag
+        VALUES: local:globals global:greenhouse local:<%= cluster[:name] %>
+        HELM_MAJOR_VERSION: 3
+        VAULT_ROLE_ID:      ((auth.role_id))
+        VAULT_SECRET_ID:    ((auth.secret_id))
+
+- name: <%= cluster[:name] %>-organization-deploy
+  public: true
+  plan:
+    - in_parallel:
+      - get: greenhouse-org-charts.git
+        trigger: <%= cluster.fetch(:trigger, true) %>
+        passed: [ <%= cluster[:name] %>-organization-diff ]
+      - get: secrets.git
+        trigger: <%= cluster.fetch(:trigger, true) %>
+        passed: [ <%= cluster[:name] %>-organization-diff ]
+      - get: secrets-script.git
+    - task: helm-deploy
+      file: secrets-script.git/ci/shared/task-helm-upgrade.yaml
+      input_mapping:
+        helm-charts.git: greenhouse-org-charts.git
+      params:
+        CHART_PATH: system/greenhouse-organization
+        RELEASE: greenhouse-organization
+        NAMESPACE: greenhouse
+        REGION: <%= cluster[:region] %>
+        CONTEXT: <%= cluster[:name] %>
+        KUBELOGON_FETCH_JWT: "true"
+        TAG_VARIABLE: image.tag
+        TAG_FILE: tag
+        VALUES: local:globals global:greenhouse local:<%= cluster[:name] %>
+        HELM_MAJOR_VERSION: 3
+        VAULT_ROLE_ID:      ((auth.role_id))
+        VAULT_SECRET_ID:    ((auth.secret_id))
+
+<% end %>
