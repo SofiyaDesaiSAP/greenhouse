@@ -173,11 +173,15 @@ ok "Namespace and registry secret ready"
 step "Step 6 — Applying kro ResourceGraphDefinitions"
 kubectl apply -k ocm/deploy/
 
-echo "Waiting for GreenhouseBootstrap and GreenhouseStack CRDs..."
-kubectl wait --for=condition=Established \
-  crd/greenhousebootstraps.kro.run \
-  crd/greenhousestacks.kro.run \
-  --timeout=120s
+echo "Waiting for GreenhouseBootstrap and GreenhouseStack CRDs (kro processes RGDs)..."
+for crd in greenhousebootstraps.kro.run greenhousestacks.kro.run; do
+  echo "  waiting for CRD ${crd} to appear..."
+  until kubectl get crd "${crd}" >/dev/null 2>&1; do
+    sleep 3
+  done
+  kubectl wait --for=condition=Established crd/"${crd}" --timeout=60s
+  echo "  ✓ ${crd}"
+done
 ok "RGDs applied, CRDs registered"
 
 # ── Step 7: Bootstrap prerequisites (cert-manager + OCM controller) ───────────
@@ -267,6 +271,15 @@ sed \
   ${INSTANCE_PATCH_DB:+-e "${INSTANCE_PATCH_DB}"} \
   ocm/deploy/instance.yaml | kubectl apply -f -
 
+# Pre-clean stale webhook configs from any prior failed install BEFORE the new
+# install starts. If left in place they intercept SA patch requests with
+# "service not found" (controller not running). Deleting them during an active
+# Helm install causes NotFound timeouts, so this must happen before apply.
+kubectl delete validatingwebhookconfiguration \
+  greenhouse-validating-webhook-configuration --ignore-not-found 2>/dev/null || true
+kubectl delete mutatingwebhookconfiguration \
+  greenhouse-mutating-webhook-configuration --ignore-not-found 2>/dev/null || true
+
 # Wait for kro to expand the GreenhouseStack into the HelmRelease chain.
 echo "Waiting for HelmRelease/greenhouse to be created by kro..."
 until kubectl get helmrelease greenhouse -n greenhouse >/dev/null 2>&1; do
@@ -275,33 +288,48 @@ until kubectl get helmrelease greenhouse -n greenhouse >/dev/null 2>&1; do
 done
 ok "HelmRelease/greenhouse created"
 
-# Patch imagePullSecrets on all ServiceAccounts.
-# The greenhouse chart does not propagate global.imagePullSecrets to all subcharts.
-# Without this, pods start in ImagePullBackOff on the first install attempt.
+# Patch imagePullSecrets on all ServiceAccounts immediately after HelmRelease
+# is created — greenhouse chart does not propagate global.imagePullSecrets to
+# all subcharts, so pods start in ImagePullBackOff on the first install attempt.
+# No rollout restart here: restarting deployments mid-install interferes with
+# Helm's resource tracking. Let pods retry naturally; Step 11 handles retry.
 step "Patching imagePullSecrets on all ServiceAccounts"
-
-# Delete stale webhook configs from any prior failed install.
-# They intercept SA patch requests and reject them with "service not found".
-kubectl delete validatingwebhookconfiguration \
-  greenhouse-validating-webhook-configuration --ignore-not-found 2>/dev/null || true
-kubectl delete mutatingwebhookconfiguration \
-  greenhouse-mutating-webhook-configuration --ignore-not-found 2>/dev/null || true
-
 for sa in $(kubectl get serviceaccount -n greenhouse \
     -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do
   kubectl patch serviceaccount "${sa}" -n greenhouse --type=merge \
     -p '{"imagePullSecrets":[{"name":"greenhouse-ocm-registry-creds"}]}' \
     >/dev/null 2>&1 || true
 done
-kubectl rollout restart deployment -n greenhouse 2>/dev/null || true
 ok "imagePullSecrets patched"
 
 # ── Step 11: Wait for greenhouse ──────────────────────────────────────────────
-step "Step 11 — Waiting for greenhouse HelmRelease (up to 10m)"
-kubectl wait helmrelease/greenhouse \
-  --namespace greenhouse \
-  --for=condition=Ready \
-  --timeout=600s
+step "Step 11 — Waiting for greenhouse HelmRelease (up to 15m)"
+
+# The first install attempt may fail with InstallFailed if the controller pod
+# was in ImagePullBackOff before the SA imagePullSecrets patch took effect.
+# In that case, force a retry via suspend+unsuspend and wait again.
+if ! kubectl wait helmrelease/greenhouse -n greenhouse \
+    --for=condition=Ready --timeout=420s 2>/dev/null; then
+  HR_REASON=$(kubectl get helmrelease greenhouse -n greenhouse \
+    -o jsonpath='{.status.conditions[?(@.type=="Ready")].reason}' 2>/dev/null || echo "")
+  echo "HelmRelease not ready (reason: ${HR_REASON}) — checking if retry is needed..."
+
+  if [[ "${HR_REASON}" == "InstallFailed" || "${HR_REASON}" == "UpgradeFailed" ]]; then
+    echo "Forcing HelmRelease retry via suspend+unsuspend..."
+    kubectl patch helmrelease greenhouse -n greenhouse \
+      --type=merge -p '{"spec":{"suspend":true}}'
+    sleep 5
+    kubectl patch helmrelease greenhouse -n greenhouse \
+      --type=merge -p '{"spec":{"suspend":false}}'
+    echo "Waiting for HelmRelease retry (up to 8m)..."
+    kubectl wait helmrelease/greenhouse -n greenhouse \
+      --for=condition=Ready --timeout=480s
+  else
+    # Not a retriable failure — surface the error and exit
+    kubectl describe helmrelease greenhouse -n greenhouse | tail -20
+    die "HelmRelease/greenhouse not ready (reason: ${HR_REASON})"
+  fi
+fi
 ok "greenhouse HelmRelease ready"
 
 # ── Verify ────────────────────────────────────────────────────────────────────
