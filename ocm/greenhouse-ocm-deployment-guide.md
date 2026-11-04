@@ -323,6 +323,10 @@ helm upgrade --install kro /tmp/kro-chart.tgz \
   --wait --timeout 5m
 ```
 
+<img width="548" height="87" alt="image" src="https://github.com/user-attachments/assets/a8a44991-54f5-42c2-acdf-f93b50e80929" />
+
+
+
 
 ### Step 3 — Grant helm-controller RBAC
 
