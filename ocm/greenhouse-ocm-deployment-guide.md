@@ -299,6 +299,11 @@ kubectl rollout status deploy/source-controller -n flux-system --timeout=120s
 kubectl rollout status deploy/helm-controller   -n flux-system --timeout=120s
 ```
 
+<img width="679" height="124" alt="image" src="https://github.com/user-attachments/assets/ccdd55a8-8df2-4dbf-9579-adfac5930ea1" />
+
+<img width="744" height="676" alt="image" src="https://github.com/user-attachments/assets/924ea64c-667c-4475-a8b2-b62f851f0190" />
+
+
 ### Step 2 — Install kro
 
 kro is downloaded from the OCM prerequisites bundle — no internet access required at deploy time.
