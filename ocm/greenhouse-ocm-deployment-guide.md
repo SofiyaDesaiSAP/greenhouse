@@ -163,6 +163,7 @@ REGISTRY_TOKEN=$REGISTRY_TOKEN ocm transfer ctf \
 This must happen before signing — signing the local CTF first and then transferring would
 invalidate the signature because the descriptors change during transfer.
 
+
 Verify 2 components landed (greenhouse root + core):
 
 ```bash
@@ -228,6 +229,9 @@ REGISTRY_TOKEN=$REGISTRY_TOKEN ocm transfer ctf \
   greenhouse-prereqs-bundle.ctf \
   oci://$ON_SITE_REGISTRY
 ```
+
+<img width="884" height="741" alt="image" src="https://github.com/user-attachments/assets/ad96d2fd-f7e5-4ec9-a6f9-ee4596901939" />
+
 
 Verify the greenhouse bundle on the on-site registry (greenhouse root + core):
 
