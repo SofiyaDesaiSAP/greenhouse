@@ -9,6 +9,9 @@ global:
     ociMirroringEnabled: true
   pluginPreset:
     expressionEvaluationEnabled: true
+    integrationEnabled: true
+  workloadIdentity:
+    enabled: false
 alerts:
   enabled: false
 controllerManager:
@@ -34,3 +37,5 @@ controllerManager:
   image:
     repository: greenhouse/manager
     tag: local
+webhook:
+  replicas: 1

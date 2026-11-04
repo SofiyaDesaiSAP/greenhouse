@@ -5,16 +5,21 @@ package cluster
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"regexp"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	k8svalidation "k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/client-go/tools/clientcmd"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -28,6 +33,7 @@ import (
 
 type KubeconfigReconciler struct {
 	client.Client
+	MaxConcurrentReconciles int
 }
 
 //+kubebuilder:rbac:groups=greenhouse.sap,resources=clusters,verbs=get;list;watch
@@ -46,6 +52,7 @@ func (r *KubeconfigReconciler) SetupWithManager(name string, mgr ctrl.Manager) e
 		Watches(&v1alpha1.Organization{}, handler.EnqueueRequestsFromMapFunc(r.organizationToClusters)).
 		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(r.organizationSecretToClusters)).
 		For(&v1alpha1.ClusterKubeconfig{}).
+		WithOptions(controller.Options{MaxConcurrentReconciles: r.MaxConcurrentReconciles}).
 		Complete(r)
 }
 
@@ -109,6 +116,28 @@ func (r *KubeconfigReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		}
 	}
 
+	// Sync labels from cluster on every reconcile, independent of OIDC/secret availability.
+	if _, err := clientutil.CreateOrPatch(ctx, r.Client, &kubeconfig, func() error {
+		kubeconfig.Labels = cluster.GetLabels()
+		// Always delete the version key first so a stale value from the Cluster's own
+		// metadata labels cannot survive when Status.KubernetesVersion is empty.
+		delete(kubeconfig.Labels, greenhouseapis.LabelKeyKubernetesVersion)
+		if v := cluster.Status.KubernetesVersion; v != "" {
+			if kubeconfig.Labels == nil {
+				kubeconfig.Labels = make(map[string]string)
+			}
+			if safe, ok := labelSafeVersion(v); ok {
+				kubeconfig.Labels[greenhouseapis.LabelKeyKubernetesVersion] = safe
+			} else {
+				l.Info("kubernetes version cannot be represented as a label value, skipping", "version", v)
+			}
+		}
+		return nil
+	}); err != nil {
+		l.Error(err, "failed to sync labels on ClusterKubeconfig")
+		return ctrl.Result{}, err
+	}
+
 	// get oidc info from organization
 	oidc, err := r.getOIDCInfo(ctx, cluster.Namespace, &cluster)
 	if err != nil {
@@ -143,46 +172,66 @@ func (r *KubeconfigReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	}
 
 	// collect cluster connection data and update kubeconfig
-	rootKubeCfg, hasKey := secret.Data[greenhouseapis.GreenHouseKubeConfigKey]
-	if !hasKey || len(rootKubeCfg) == 0 {
-		kubeconfig.Status.Conditions.SetConditions(
-			greenhousemetav1alpha1.TrueCondition(
-				v1alpha1.KubeconfigReconcileFailedCondition,
-				"KubeconfigMissing",
-				"secret data key greenhousekubeconfig missing or empty",
-			),
-		)
-		// patch status before returning on error
-		result, perr := clientutil.PatchStatus(ctx, r.Client, &kubeconfig, func() error {
-			kubeconfig.Status = calculateKubeconfigStatus(&kubeconfig)
-			return nil
-		})
-		if perr != nil {
-			log.FromContext(ctx).Error(perr, "error setting status")
-		}
-		l.Info("status updated", "result", result)
-		return ctrl.Result{}, nil
-	}
-
-	kubeCfg, err := clientcmd.Load(rootKubeCfg)
-	if err != nil {
-		kubeconfig.Status.Conditions.SetConditions(greenhousemetav1alpha1.TrueCondition(v1alpha1.KubeconfigReconcileFailedCondition, "KubeconfigLoadError", err.Error()))
-		// patch status before returning on error
-		result, perr := clientutil.PatchStatus(ctx, r.Client, &kubeconfig, func() error {
-			kubeconfig.Status = calculateKubeconfigStatus(&kubeconfig)
-			return nil
-		})
-		if perr != nil {
-			log.FromContext(ctx).Error(perr, "error setting status")
-		}
-		l.Info("status updated", "result", result)
-		return ctrl.Result{}, nil
-	}
-
 	var clusterCfg *clientcmdapi.Cluster
-	for _, v := range kubeCfg.Clusters {
-		clusterCfg = v
-		break
+	if cluster.Annotations[greenhouseapis.ClusterWorkloadIdentityAnnotation] == greenhouseapis.ClusterWorkloadIdentityEnabled {
+		caData, err := base64.StdEncoding.DecodeString(string(secret.Data[greenhouseapis.SecretAPIServerCAKey]))
+		if err != nil {
+			result, perr := clientutil.PatchStatus(ctx, r.Client, &kubeconfig, func() error {
+				kubeconfig.Status.Conditions.SetConditions(greenhousemetav1alpha1.TrueCondition(v1alpha1.KubeconfigReconcileFailedCondition, "SecretDataError", err.Error()))
+				kubeconfig.Status = calculateKubeconfigStatus(&kubeconfig)
+				return nil
+			})
+			if perr != nil {
+				log.FromContext(ctx).Error(perr, "error setting status")
+			}
+			l.Info("status updated", "result", result)
+			return ctrl.Result{}, nil
+		}
+		clusterCfg = &clientcmdapi.Cluster{
+			Server:                   secret.Annotations[greenhouseapis.SecretAPIServerURLAnnotation],
+			CertificateAuthorityData: caData,
+		}
+	} else {
+		rootKubeCfg, hasKey := secret.Data[greenhouseapis.GreenHouseKubeConfigKey]
+		if !hasKey || len(rootKubeCfg) == 0 {
+			kubeconfig.Status.Conditions.SetConditions(
+				greenhousemetav1alpha1.TrueCondition(
+					v1alpha1.KubeconfigReconcileFailedCondition,
+					"KubeconfigMissing",
+					"secret data key greenhousekubeconfig missing or empty",
+				),
+			)
+			// patch status before returning on error
+			result, perr := clientutil.PatchStatus(ctx, r.Client, &kubeconfig, func() error {
+				kubeconfig.Status = calculateKubeconfigStatus(&kubeconfig)
+				return nil
+			})
+			if perr != nil {
+				log.FromContext(ctx).Error(perr, "error setting status")
+			}
+			l.Info("status updated", "result", result)
+			return ctrl.Result{}, nil
+		}
+
+		kubeCfg, err := clientcmd.Load(rootKubeCfg)
+		if err != nil {
+			kubeconfig.Status.Conditions.SetConditions(greenhousemetav1alpha1.TrueCondition(v1alpha1.KubeconfigReconcileFailedCondition, "KubeconfigLoadError", err.Error()))
+			// patch status before returning on error
+			result, perr := clientutil.PatchStatus(ctx, r.Client, &kubeconfig, func() error {
+				kubeconfig.Status = calculateKubeconfigStatus(&kubeconfig)
+				return nil
+			})
+			if perr != nil {
+				log.FromContext(ctx).Error(perr, "error setting status")
+			}
+			l.Info("status updated", "result", result)
+			return ctrl.Result{}, nil
+		}
+
+		for _, v := range kubeCfg.Clusters {
+			clusterCfg = v
+			break
+		}
 	}
 	if clusterCfg == nil {
 		kubeconfig.Status.Conditions.SetConditions(
@@ -206,9 +255,6 @@ func (r *KubeconfigReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 
 	// collect oidc data and update kubeconfig
 	result, err := clientutil.CreateOrPatch(ctx, r.Client, &kubeconfig, func() error {
-		// Mirror the cluster's labels
-		kubeconfig.Labels = cluster.GetLabels()
-
 		kubeconfig.Spec.Kubeconfig.Clusters = []v1alpha1.ClusterKubeconfigClusterItem{
 			{
 				Name: cluster.Name,
@@ -447,4 +493,34 @@ var ExposedKubeconfigConditions = []greenhousemetav1alpha1.ConditionType{
 	v1alpha1.KubeconfigCreatedCondition,
 	v1alpha1.KubeconfigReconcileFailedCondition,
 	v1alpha1.KubeconfigReadyCondition,
+}
+
+// nonLabelChars matches any character that is not alphanumeric, '-', '_', or '.'.
+var nonLabelChars = regexp.MustCompile(`[^a-zA-Z0-9\-_.]+`)
+
+// labelSafeVersion converts a Kubernetes version string (e.g. "v1.31.4+k3s1") into
+// a value that satisfies Kubernetes label-value constraints (≤63 chars,
+// alphanumeric/-/./_ only, must start and end with alphanumeric).
+// Returns the sanitized value and true when the result is valid, or ("", false)
+// when the version string cannot be represented as a valid label value.
+// Selectors should match the normalized form, e.g. "v1.31.4-k3s1".
+func labelSafeVersion(version string) (string, bool) {
+	// Replace '+' with '-' to preserve build metadata readably (v1.31.4+k3s1 → v1.31.4-k3s1).
+	safe := strings.ReplaceAll(version, "+", "-")
+	// Replace any remaining disallowed characters with '-'.
+	safe = nonLabelChars.ReplaceAllString(safe, "-")
+	// Truncate to 63 characters.
+	if len(safe) > 63 {
+		safe = safe[:63]
+	}
+	// Trim leading/trailing characters that are not alphanumeric.
+	safe = strings.TrimRight(safe, "-_.")
+	safe = strings.TrimLeft(safe, "-_.")
+	if safe == "" {
+		return "", false
+	}
+	if len(k8svalidation.IsValidLabelValue(safe)) > 0 {
+		return "", false
+	}
+	return safe, true
 }

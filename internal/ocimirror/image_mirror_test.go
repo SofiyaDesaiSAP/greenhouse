@@ -11,6 +11,8 @@ import (
 	"github.com/google/go-containerregistry/pkg/crane"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+
+	"github.com/cloudoperators/greenhouse/internal/test/fixture"
 )
 
 var mirrorConfig = &RegistryMirrorConfig{
@@ -187,11 +189,7 @@ var _ = Describe("BuildImageTransformations", func() {
 	It("should return transforms for upstream images", func() {
 		mirror := newTestImageMirror(mirrorConfig, nil)
 
-		manifests := `
-containers:
-- image: ghcr.io/cloudoperators/greenhouse:main
-- image: docker.io/library/nginx:latest
-`
+		manifests := fixture.PodManifest("ghcr.io/cloudoperators/greenhouse:main", "docker.io/library/nginx:latest")
 		transforms := mirror.BuildImageTransformations(manifests)
 		Expect(transforms).To(HaveLen(2))
 		Expect(transforms).To(ContainElement(ImageTransform{
@@ -207,10 +205,7 @@ containers:
 	It("should skip images already on a mirror", func() {
 		mirror := newTestImageMirror(mirrorConfig, nil)
 
-		manifests := `
-containers:
-- image: global.registry.com/ghcr-mirror/cloudoperators/greenhouse:main
-`
+		manifests := fixture.PodManifest("global.registry.com/ghcr-mirror/cloudoperators/greenhouse:main")
 		transforms := mirror.BuildImageTransformations(manifests)
 		Expect(transforms).To(BeEmpty())
 	})
@@ -218,10 +213,7 @@ containers:
 	It("should skip images without configured mirror", func() {
 		mirror := newTestImageMirror(mirrorConfig, nil)
 
-		manifests := `
-containers:
-- image: registry.k8s.io/pause:3.9
-`
+		manifests := fixture.PodManifest("registry.k8s.io/pause:3.9")
 		transforms := mirror.BuildImageTransformations(manifests)
 		Expect(transforms).To(BeEmpty())
 	})
@@ -229,15 +221,67 @@ containers:
 	It("should handle mixed upstream and already-mirrored images", func() {
 		mirror := newTestImageMirror(mirrorConfig, nil)
 
-		manifests := `
-containers:
-- image: ghcr.io/cloudoperators/greenhouse:main
-- image: global.registry.com/ghcr-mirror/already-mirrored:v1
-- image: registry.k8s.io/pause:3.9
-`
+		manifests := fixture.PodManifest("ghcr.io/cloudoperators/greenhouse:main", "global.registry.com/ghcr-mirror/already-mirrored:v1", "registry.k8s.io/pause:3.9")
 		transforms := mirror.BuildImageTransformations(manifests)
 		Expect(transforms).To(HaveLen(1))
 		Expect(transforms[0].Original).To(Equal("ghcr.io/cloudoperators/greenhouse"))
+	})
+
+	DescribeTable("should use the image name as written in the manifest",
+		func(image string, expected ImageTransform) {
+			mirror := newTestImageMirror(mirrorConfig, nil)
+
+			transforms := mirror.BuildImageTransformations(fixture.PodManifest(image))
+			Expect(transforms).To(ConsistOf(expected))
+		},
+		Entry("bare Docker Hub official image", "busybox:latest", ImageTransform{
+			Original: "busybox",
+			Mirrored: "global.registry.com/dockerhub-mirror/library/busybox",
+		}),
+		Entry("Docker Hub official image without library/", "docker.io/busybox:latest", ImageTransform{
+			Original: "docker.io/busybox",
+			Mirrored: "global.registry.com/dockerhub-mirror/library/busybox",
+		}),
+		Entry("index.docker.io registry", "index.docker.io/busybox:latest", ImageTransform{
+			Original: "index.docker.io/busybox",
+			Mirrored: "global.registry.com/dockerhub-mirror/library/busybox",
+		}),
+		Entry("namespaced Docker Hub image without registry", "opensearchproject/opensearch-operator:2.8.0", ImageTransform{
+			Original: "opensearchproject/opensearch-operator",
+			Mirrored: "global.registry.com/dockerhub-mirror/opensearchproject/opensearch-operator",
+		}),
+		Entry("fully qualified Docker Hub official image", "docker.io/library/busybox:1.36", ImageTransform{
+			Original: "docker.io/library/busybox",
+			Mirrored: "global.registry.com/dockerhub-mirror/library/busybox",
+		}),
+		Entry("digest", "ghcr.io/cloudoperators/greenhouse@sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", ImageTransform{
+			Original: "ghcr.io/cloudoperators/greenhouse",
+			Mirrored: "global.registry.com/ghcr-mirror/cloudoperators/greenhouse",
+		}),
+	)
+
+	It("should deduplicate the same image with different tags", func() {
+		mirror := newTestImageMirror(mirrorConfig, nil)
+
+		transforms := mirror.BuildImageTransformations(fixture.PodManifest("busybox:1.36", "busybox:latest"))
+		Expect(transforms).To(ConsistOf(ImageTransform{
+			Original: "busybox",
+			Mirrored: "global.registry.com/dockerhub-mirror/library/busybox",
+		}))
+	})
+
+	It("should return a transform for each spelling of the same image", func() {
+		mirror := newTestImageMirror(mirrorConfig, nil)
+
+		transforms := mirror.BuildImageTransformations(
+			fixture.PodManifest("busybox:latest", "docker.io/library/busybox:1.36"),
+			fixture.PodManifest("docker.io/busybox:latest"),
+		)
+		Expect(transforms).To(ConsistOf(
+			ImageTransform{Original: "busybox", Mirrored: "global.registry.com/dockerhub-mirror/library/busybox"},
+			ImageTransform{Original: "docker.io/library/busybox", Mirrored: "global.registry.com/dockerhub-mirror/library/busybox"},
+			ImageTransform{Original: "docker.io/busybox", Mirrored: "global.registry.com/dockerhub-mirror/library/busybox"},
+		))
 	})
 })
 
@@ -249,11 +293,7 @@ var _ = Describe("ReplicateOCIArtifacts", func() {
 			return []byte("{}"), nil
 		})
 
-		manifests := `
-containers:
-- image: ghcr.io/cloudoperators/greenhouse:main
-- image: docker.io/library/nginx:latest
-`
+		manifests := fixture.PodManifest("ghcr.io/cloudoperators/greenhouse:main", "docker.io/library/nginx:latest")
 		replicated, err := mirror.ReplicateOCIArtifacts(context.Background(), nil, manifests)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(replicated).To(HaveLen(2))
@@ -269,10 +309,7 @@ containers:
 			return []byte("{}"), nil
 		})
 
-		manifests := `
-containers:
-- image: global.registry.com/ghcr-mirror/cloudoperators/greenhouse:main
-`
+		manifests := fixture.PodManifest("global.registry.com/ghcr-mirror/cloudoperators/greenhouse:main")
 		replicated, err := mirror.ReplicateOCIArtifacts(context.Background(), nil, manifests)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(replicated).To(HaveLen(1))
@@ -286,11 +323,7 @@ containers:
 			return []byte("{}"), nil
 		})
 
-		manifests := `
-containers:
-- image: ghcr.io/cloudoperators/greenhouse:main
-- image: docker.io/library/nginx:latest
-`
+		manifests := fixture.PodManifest("ghcr.io/cloudoperators/greenhouse:main", "docker.io/library/nginx:latest")
 		alreadyReplicated := []string{"ghcr.io/cloudoperators/greenhouse:main"}
 		replicated, err := mirror.ReplicateOCIArtifacts(context.Background(), alreadyReplicated, manifests)
 		Expect(err).NotTo(HaveOccurred())
@@ -305,10 +338,7 @@ containers:
 			return []byte("{}"), nil
 		})
 
-		manifests := `
-containers:
-- image: registry.k8s.io/pause:3.9
-`
+		manifests := fixture.PodManifest("registry.k8s.io/pause:3.9")
 		replicated, err := mirror.ReplicateOCIArtifacts(context.Background(), nil, manifests)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(replicated).To(BeEmpty())
@@ -323,11 +353,7 @@ containers:
 			return []byte("{}"), nil
 		})
 
-		manifests := `
-containers:
-- image: ghcr.io/cloudoperators/greenhouse:main
-- image: docker.io/library/nginx:latest
-`
+		manifests := fixture.PodManifest("ghcr.io/cloudoperators/greenhouse:main", "docker.io/library/nginx:latest")
 		replicated, err := mirror.ReplicateOCIArtifacts(context.Background(), nil, manifests)
 		Expect(err).To(HaveOccurred())
 		Expect(err.Error()).To(ContainSubstring("connection refused"))

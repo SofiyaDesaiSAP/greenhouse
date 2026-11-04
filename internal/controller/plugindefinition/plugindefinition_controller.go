@@ -6,27 +6,31 @@ package plugindefinition
 import (
 	"context"
 
-	sourcev1 "github.com/fluxcd/source-controller/api/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+
+	sourcev1 "github.com/fluxcd/source-controller/api/v1"
 
 	greenhousemetav1alpha1 "github.com/cloudoperators/greenhouse/api/meta/v1alpha1"
 	greenhousev1alpha1 "github.com/cloudoperators/greenhouse/api/v1alpha1"
-	"github.com/cloudoperators/greenhouse/internal/clientutil"
+	"github.com/cloudoperators/greenhouse/internal/controller/plugindefinition/phases"
 	"github.com/cloudoperators/greenhouse/pkg/lifecycle"
+	"github.com/cloudoperators/greenhouse/pkg/predicates"
 )
 
 // PluginDefinitionReconciler reconciles a PluginDefinition object.
 type PluginDefinitionReconciler struct {
 	client.Client
-	Scheme              *runtime.Scheme
-	recorder            events.EventRecorder
-	OCIMirroringEnabled bool
+	Scheme                  *runtime.Scheme
+	recorder                events.EventRecorder
+	MaxConcurrentReconciles int
+	OCIMirroringEnabled     bool
 }
 
 // SetupWithManager sets up the controller with the Manager.
@@ -38,7 +42,9 @@ func (r *PluginDefinitionReconciler) SetupWithManager(name string, mgr ctrl.Mana
 	return ctrl.NewControllerManagedBy(mgr).
 		Named(name).
 		For(&greenhousev1alpha1.PluginDefinition{}).
-		Owns(&sourcev1.HelmChart{}, builder.WithPredicates(clientutil.PredicateIgnoreDeletingResources())).Complete(r)
+		Owns(&sourcev1.HelmChart{}, builder.WithPredicates(predicates.PredicateIgnoreDeletingResources())).
+		WithOptions(controller.Options{MaxConcurrentReconciles: r.MaxConcurrentReconciles}).
+		Complete(r)
 }
 
 // +kubebuilder:rbac:groups=source.toolkit.fluxcd.io,resources=ocirepositories, verbs=get;list;watch;create;update;patch;delete
@@ -82,35 +88,14 @@ func (r *PluginDefinitionReconciler) EnsureCreated(ctx context.Context, obj life
 		return ctrl.Result{}, lifecycle.Success, nil
 	}
 
-	h := &helmer{
-		k8sClient:           r.Client,
-		recorder:            r.recorder,
-		pluginDef:           pluginDef,
-		namespaceName:       pluginDef.Namespace,
-		ociMirroringEnabled: r.OCIMirroringEnabled,
+	p := &phases.Phase{
+		Client:              r.Client,
+		Recorder:            r.recorder,
+		PluginDef:           pluginDef,
+		NamespaceName:       pluginDef.Namespace,
+		OCIMirroringEnabled: r.OCIMirroringEnabled,
 	}
-
-	helmRepo, err := h.createUpdateHelmRepository(ctx)
-	if err != nil {
-		return ctrl.Result{}, lifecycle.Failed, err
-	}
-
-	if replicationErr := h.ensureChartReplication(ctx); replicationErr != nil {
-		return ctrl.Result{}, lifecycle.Failed, replicationErr
-	}
-
-	helmChart, err := h.createUpdateHelmChart(ctx, helmRepo)
-	if err != nil {
-		return ctrl.Result{}, lifecycle.Failed, err
-	}
-
-	if err := h.deleteOrphanedHelmCharts(ctx); err != nil {
-		return ctrl.Result{}, lifecycle.Failed, err
-	}
-
-	h.setHelmChartReadyCondition(ctx, helmChart)
-
-	return ctrl.Result{}, lifecycle.Success, nil
+	return lifecycle.ExecuteSubRoutine(ctx, p.EnsureCreatePhases())
 }
 
 func (r *PluginDefinitionReconciler) EnsureDeleted(_ context.Context, _ lifecycle.RuntimeObject) (ctrl.Result, lifecycle.ReconcileResult, error) {

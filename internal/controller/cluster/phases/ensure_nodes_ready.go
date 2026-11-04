@@ -19,11 +19,18 @@ const controlPlaneNodeLabel = "node-role.kubernetes.io/control-plane"
 
 func (p *Phase) ensureNodesReady(cluster *greenhousev1alpha1.Cluster) lifecycle.SubRoutine {
 	return func(ctx context.Context) (lifecycle.Result, error) {
+		if cluster.Spec.Mode == greenhousev1alpha1.ClusterModeWorkerless {
+			cluster.RemoveCondition(greenhousev1alpha1.AllNodesReady)
+			cluster.Status.Nodes = nil
+			return lifecycle.Continue(), nil
+		}
+
 		remoteClient, err := clientutil.NewK8sClientFromRestClientGetter(p.RestClientGetter)
 		if err != nil {
 			cluster.SetCondition(greenhousemetav1alpha1.FalseCondition(
 				greenhousev1alpha1.AllNodesReady, "", err.Error(),
 			))
+			cluster.Status.Nodes = nil
 			return lifecycle.Continue(), nil
 		}
 
@@ -32,6 +39,7 @@ func (p *Phase) ensureNodesReady(cluster *greenhousev1alpha1.Cluster) lifecycle.
 			cluster.SetCondition(greenhousemetav1alpha1.FalseCondition(
 				greenhousev1alpha1.AllNodesReady, "", err.Error(),
 			))
+			cluster.Status.Nodes = nil
 			return lifecycle.Continue(), nil
 		}
 

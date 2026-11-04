@@ -21,6 +21,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
@@ -32,6 +33,7 @@ import (
 	"github.com/cloudoperators/greenhouse/internal/clientutil"
 	"github.com/cloudoperators/greenhouse/internal/util"
 	"github.com/cloudoperators/greenhouse/pkg/lifecycle"
+	"github.com/cloudoperators/greenhouse/pkg/predicates"
 )
 
 var exposedConditions = []greenhousemetav1alpha1.ConditionType{
@@ -43,7 +45,8 @@ var exposedConditions = []greenhousemetav1alpha1.ConditionType{
 // TeamRoleBindingReconciler reconciles a TeamRole object
 type TeamRoleBindingReconciler struct {
 	client.Client
-	recorder events.EventRecorder
+	recorder                events.EventRecorder
+	MaxConcurrentReconciles int
 }
 
 //+kubebuilder:rbac:groups=greenhouse.sap,resources=teamrolebindings,verbs=get;list;watch;create;update;patch;delete
@@ -87,7 +90,8 @@ func (r *TeamRoleBindingReconciler) SetupWithManager(name string, mgr ctrl.Manag
 			handler.EnqueueRequestsFromMapFunc(r.enqueueTeamRoleBindingsFor)).
 		// Reconcile TeamRoleBindings for all Cluster label changes or Ready status transitions in the same namespace
 		Watches(&greenhousev1alpha1.Cluster{}, handler.EnqueueRequestsFromMapFunc(r.enqueueAllTeamRoleBindingsInNamespace),
-			builder.WithPredicates(predicate.Or(predicate.LabelChangedPredicate{}, clientutil.PredicateClusterReadyStatusChange()))).
+			builder.WithPredicates(predicate.Or(predicate.LabelChangedPredicate{}, predicates.PredicateClusterReadyStatusChange()))).
+		WithOptions(controller.Options{MaxConcurrentReconciles: r.MaxConcurrentReconciles}).
 		Complete(r)
 }
 
@@ -649,7 +653,7 @@ func reconcileRoleBinding(ctx context.Context, cl client.Client, c *greenhousev1
 
 // deleteAllDeployedRoleBindings deletes all RoleBindings deployed to a remote cluster.
 // Deletes not only those specified in .spec.namespaces, but all by the trb.GetRBACName() name.
-func (r TeamRoleBindingReconciler) deleteAllDeployedRoleBindings(ctx context.Context, cl client.Client, trb *greenhousev1alpha2.TeamRoleBinding, cluster *greenhousev1alpha1.Cluster) error {
+func (r *TeamRoleBindingReconciler) deleteAllDeployedRoleBindings(ctx context.Context, cl client.Client, trb *greenhousev1alpha2.TeamRoleBinding, cluster *greenhousev1alpha1.Cluster) error {
 	var roleBindingsToDelete = new(rbacv1.RoleBindingList)
 	err := cl.List(ctx, roleBindingsToDelete, &client.ListOptions{
 		FieldSelector: fields.OneTermEqualSelector("metadata.name", trb.GetRBACName()),
@@ -674,7 +678,7 @@ func (r TeamRoleBindingReconciler) deleteAllDeployedRoleBindings(ctx context.Con
 	return nil
 }
 
-func (r TeamRoleBindingReconciler) deleteClusterRoleBinding(ctx context.Context, cl client.Client, trb *greenhousev1alpha2.TeamRoleBinding, cluster *greenhousev1alpha1.Cluster) error {
+func (r *TeamRoleBindingReconciler) deleteClusterRoleBinding(ctx context.Context, cl client.Client, trb *greenhousev1alpha2.TeamRoleBinding, cluster *greenhousev1alpha1.Cluster) error {
 	remoteObject := &rbacv1.ClusterRoleBinding{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: trb.GetRBACName(),
@@ -692,7 +696,7 @@ func (r TeamRoleBindingReconciler) deleteClusterRoleBinding(ctx context.Context,
 	return nil
 }
 
-func (r TeamRoleBindingReconciler) deleteClusterRole(ctx context.Context, cl client.Client, trb *greenhousev1alpha2.TeamRoleBinding, cluster *greenhousev1alpha1.Cluster) error {
+func (r *TeamRoleBindingReconciler) deleteClusterRole(ctx context.Context, cl client.Client, trb *greenhousev1alpha2.TeamRoleBinding, cluster *greenhousev1alpha1.Cluster) error {
 	remoteObject := &rbacv1.ClusterRole{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: greenhouseapis.RBACPrefix + trb.Spec.TeamRoleRef,

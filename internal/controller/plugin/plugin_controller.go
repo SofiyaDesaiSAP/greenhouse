@@ -9,8 +9,10 @@ import (
 	"fmt"
 	"maps"
 	"strings"
+	"sync/atomic"
 
 	"helm.sh/helm/v3/pkg/release"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/types"
@@ -28,10 +30,12 @@ import (
 	greenhousev1alpha1 "github.com/cloudoperators/greenhouse/api/v1alpha1"
 	"github.com/cloudoperators/greenhouse/internal/clientutil"
 	"github.com/cloudoperators/greenhouse/internal/common"
+	"github.com/cloudoperators/greenhouse/internal/features"
 	"github.com/cloudoperators/greenhouse/internal/flux"
 	"github.com/cloudoperators/greenhouse/internal/helm"
 	"github.com/cloudoperators/greenhouse/internal/util"
 	"github.com/cloudoperators/greenhouse/pkg/lifecycle"
+	"github.com/cloudoperators/greenhouse/pkg/predicates"
 )
 
 // PluginReconciler reconciles a Plugin object.
@@ -43,6 +47,12 @@ type PluginReconciler struct {
 	StoragePath         string
 	HTTPRetry           int
 	artifactory         flux.IArtifactory
+
+	MaxConcurrentReconciles int
+	WorkloadIdentityEnabled bool
+	FeatureFlagsName        string
+	FeatureFlagsNamespace   string
+	workloadIdentityEnabled atomic.Bool
 }
 
 //+kubebuilder:rbac:groups=greenhouse.sap,resources=plugindefinitions,verbs=get;list;watch;create;update;patch;delete
@@ -52,6 +62,7 @@ type PluginReconciler struct {
 //+kubebuilder:rbac:groups=greenhouse.sap,resources=plugins/finalizers,verbs=update
 //+kubebuilder:rbac:groups=greenhouse.sap,resources=clusters;teams,verbs=get;list;watch
 //+kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
+//+kubebuilder:rbac:groups="",resources=serviceaccounts/token,verbs=create
 //+kubebuilder:rbac:groups="events.k8s.io",resources=events,verbs=get;list;watch;create;patch;update
 // +kubebuilder:rbac:groups=helm.toolkit.fluxcd.io,resources=helmreleases,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=helm.toolkit.fluxcd.io,resources=helmreleases/status,verbs=get;update;patch
@@ -84,15 +95,16 @@ func (r *PluginReconciler) SetupWithManager(name string, mgr ctrl.Manager) error
 	}
 
 	r.artifactory = flux.NewArtifactory(ctrl.Log.WithName("artifactory"), r.StoragePath, r.HTTPRetry)
+	r.workloadIdentityEnabled.Store(r.WorkloadIdentityEnabled)
 
 	return ctrl.NewControllerManagedBy(mgr).
 		Named(name).
 		WithOptions(controller.Options{
-			MaxConcurrentReconciles: 10,
+			MaxConcurrentReconciles: r.MaxConcurrentReconciles,
 		}).
 		For(&greenhousev1alpha1.Plugin{}).
 		// Reconcile on owned flux HelmRelease changes.
-		Owns(&helmv2.HelmRelease{}).
+		Owns(&helmv2.HelmRelease{}, builder.WithPredicates(predicates.PredicateFluxHelmReleaseStatus())).
 		// If a ClusterPluginDefinition was changed, reconcile relevant Plugins.
 		Watches(
 			&greenhousev1alpha1.ClusterPluginDefinition{},
@@ -107,13 +119,43 @@ func (r *PluginReconciler) SetupWithManager(name string, mgr ctrl.Manager) error
 		Watches(
 			&greenhousev1alpha1.Cluster{},
 			handler.EnqueueRequestsFromMapFunc(r.enqueueAllPluginsForCluster),
+			builder.WithPredicates(predicates.PredicateClusterReadyStatusChange()),
 		).
 		Watches(
 			&greenhousev1alpha1.Team{},
 			handler.EnqueueRequestsFromMapFunc(r.enqueueAllPluginsInNamespace),
 			builder.WithPredicates(predicate.GenerationChangedPredicate{}),
 		).
+		// Watch the feature flags ConfigMap to hot-reload the workload identity feature gate.
+		Watches(
+			&corev1.ConfigMap{},
+			handler.EnqueueRequestsFromMapFunc(r.reloadFeatureFlags),
+			builder.WithPredicates(predicates.PredicateHasLabelWithValue(greenhouseapis.LabelKeyFeatureFlags, "true")),
+		).
 		Complete(r)
+}
+
+func (r *PluginReconciler) reloadFeatureFlags(ctx context.Context, _ client.Object) []ctrl.Request {
+	featureFlags, err := features.NewFeatures(ctx, r.Client, r.FeatureFlagsName, r.FeatureFlagsNamespace)
+	if err != nil {
+		ctrl.LoggerFrom(ctx).Error(err, "failed reloading feature flags")
+		return nil
+	}
+	r.workloadIdentityEnabled.Store(featureFlags.IsWorkloadIdentityEnabled())
+
+	clusters := &greenhousev1alpha1.ClusterList{}
+	if err := r.List(ctx, clusters); err != nil {
+		ctrl.LoggerFrom(ctx).Error(err, "failed listing clusters after a feature flag change")
+		return nil
+	}
+	requests := make([]ctrl.Request, 0, len(clusters.Items))
+	for _, cluster := range clusters.Items {
+		if cluster.Annotations[greenhouseapis.ClusterConnectivityAnnotation] != greenhouseapis.ClusterConnectivityOIDC {
+			continue
+		}
+		requests = append(requests, r.enqueueAllPluginsForCluster(ctx, &cluster)...)
+	}
+	return requests
 }
 
 func (r *PluginReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {

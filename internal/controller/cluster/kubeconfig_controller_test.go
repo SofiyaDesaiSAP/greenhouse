@@ -4,13 +4,17 @@
 package cluster_test
 
 import (
+	"encoding/base64"
 	"fmt"
+	"strings"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/clientcmd"
+	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	greenhouseapis "github.com/cloudoperators/greenhouse/api"
 	"github.com/cloudoperators/greenhouse/api/v1alpha1"
@@ -83,7 +87,8 @@ var _ = Describe("ClusterKubeconfig controller", Ordered, func() {
 	})
 
 	AfterAll(func() {
-		test.MustDeleteCluster(test.Ctx, test.K8sClient, &cluster)
+		clusterSecret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: clusterName, Namespace: setup.Namespace()}}
+		test.EventuallyDeleted(test.Ctx, test.K8sClient, clusterSecret)
 		Expect(test.K8sClient.Delete(test.Ctx, oidcSecret)).To(Succeed())
 		test.EventuallyDeleted(test.Ctx, test.K8sClient, team)
 	})
@@ -147,29 +152,50 @@ var _ = Describe("ClusterKubeconfig controller", Ordered, func() {
 		}).Should(Equal("value"))
 	})
 
+	It("should set kubernetes-version label from cluster status", func() {
+		// Wait for the cluster controller to set KubernetesVersion from the envtest API server.
+		clusterWithVersion := v1alpha1.Cluster{}
+		Eventually(func(g Gomega) string {
+			g.Expect(test.K8sClient.Get(test.Ctx, types.NamespacedName{Name: cluster.Name, Namespace: setup.Namespace()}, &clusterWithVersion)).To(Succeed())
+			return clusterWithVersion.Status.KubernetesVersion
+		}).ShouldNot(BeEmpty())
+
+		// The kubeconfig controller must mirror the version in label-safe form (+→-).
+		expectedLabel := strings.ReplaceAll(clusterWithVersion.Status.KubernetesVersion, "+", "-")
+		Eventually(func(g Gomega) string {
+			ck := v1alpha1.ClusterKubeconfig{}
+			g.Expect(test.K8sClient.Get(test.Ctx, types.NamespacedName{Name: cluster.Name, Namespace: setup.Namespace()}, &ck)).To(Succeed())
+			return ck.Labels[greenhouseapis.LabelKeyKubernetesVersion]
+		}).Should(Equal(expectedLabel))
+
+		// Verify stale-value removal: if the Cluster metadata already carries the
+		// version key, the kubeconfig controller must not simply mirror that stale
+		// value — it must always reflect Status.KubernetesVersion (normalized).
+		// Inject a stale value directly on the ClusterKubeconfig and confirm the
+		// controller reconciles it back to the correct value.
+		Eventually(func(g Gomega) {
+			ck := v1alpha1.ClusterKubeconfig{}
+			g.Expect(test.K8sClient.Get(test.Ctx, types.NamespacedName{Name: cluster.Name, Namespace: setup.Namespace()}, &ck)).To(Succeed())
+			ck.Labels[greenhouseapis.LabelKeyKubernetesVersion] = "stale-value"
+			g.Expect(test.K8sClient.Update(test.Ctx, &ck)).To(Succeed())
+		}).Should(Succeed())
+
+		// Controller must reconcile it back to the correct normalized value.
+		Eventually(func(g Gomega) string {
+			ck := v1alpha1.ClusterKubeconfig{}
+			g.Expect(test.K8sClient.Get(test.Ctx, types.NamespacedName{Name: cluster.Name, Namespace: setup.Namespace()}, &ck)).To(Succeed())
+			return ck.Labels[greenhouseapis.LabelKeyKubernetesVersion]
+		}).Should(Equal(expectedLabel))
+	})
+
 	It("should update ClusterKubeconfig when cluster secret data changes", func() {
 
-		nextKubeconfig := []byte(`
-apiVersion: v1
-clusters:
-- cluster:
-    certificate-authority-data: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCkEKLS0tLS1FTkQgQ0VSVElGSUNBVEUtLS0tLQo=
-    server: https://updated:9090
-  name: updated-cluster
-contexts:
-- context:
-    cluster: updated-cluster
-    user: updated-user
-  name: updated-context
-current-context: updated-context
-kind: Config
-preferences: {}
-users:
-- name: updated-user
-  user:
-    client-certificate-data: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCkEKLS0tLS1FTkQgQ0VSVElGSUNBVEUtLS0tLQo=
-    client-key-data: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCkEKLS0tLS1FTkQgQ0VSVElGSUNBVEUtLS0tLQo=
-`)
+		baseCfg, err := clientcmd.Load(test.KubeConfig)
+		Expect(err).NotTo(HaveOccurred())
+		baseCluster := baseCfg.Clusters[baseCfg.Contexts[baseCfg.CurrentContext].Cluster]
+		baseCluster.Server = "https://updated:9090"
+		nextKubeconfig, err := clientcmd.Write(*baseCfg)
+		Expect(err).NotTo(HaveOccurred())
 
 		cfg, err := clientcmd.Load(nextKubeconfig)
 		Expect(err).NotTo(HaveOccurred())
@@ -454,5 +480,44 @@ users:
 		currentOrg := &v1alpha1.Organization{}
 		Expect(test.K8sClient.Get(test.Ctx, types.NamespacedName{Name: setup.Namespace()}, currentOrg)).To(Succeed())
 		Expect(clusterKubeconfig.Spec.Kubeconfig.AuthInfo[0].AuthInfo.AuthProvider.Config["idp-issuer-url"]).Should(Equal(currentOrg.Spec.Authentication.OIDCConfig.Issuer))
+	})
+})
+
+var _ = Describe("ClusterKubeconfig controller with workload identity", func() {
+	It("should build the kubeconfig from the OIDC secret", func() {
+		const (
+			clusterName  = "wi-cluster"
+			apiServerURL = "https://api.remote.example.com"
+			caCert       = "dummy-ca"
+		)
+		key := types.NamespacedName{Name: clusterName, Namespace: test.TestNamespace}
+		c := fake.NewClientBuilder().WithScheme(test.GreenhouseV1Alpha1Scheme()).
+			WithStatusSubresource(&v1alpha1.ClusterKubeconfig{}).
+			WithObjects(
+				test.NewOrganization(test.Ctx, test.TestNamespace, test.WithOIDCConfig(test.OIDCIssuer, test.OIDCSecretResource, test.OIDCClientIDKey, test.OIDCClientSecretKey)),
+				test.NewSecret(test.OIDCSecretResource, test.TestNamespace, test.WithSecretData(map[string][]byte{
+					test.OIDCClientIDKey:     []byte(test.OIDCClientID),
+					test.OIDCClientSecretKey: []byte(test.OIDCClientSecret),
+				})),
+				test.NewCluster(test.Ctx, clusterName, test.TestNamespace, test.WithClusterAnnotations(map[string]string{
+					greenhouseapis.ClusterWorkloadIdentityAnnotation: greenhouseapis.ClusterWorkloadIdentityEnabled,
+				})),
+				test.NewSecret(clusterName, test.TestNamespace,
+					test.WithSecretType(greenhouseapis.SecretTypeOIDCConfig),
+					test.WithSecretAnnotations(map[string]string{greenhouseapis.SecretAPIServerURLAnnotation: apiServerURL}),
+					test.WithSecretData(map[string][]byte{
+						greenhouseapis.SecretAPIServerCAKey: []byte(base64.StdEncoding.EncodeToString([]byte(caCert))),
+					})),
+			).Build()
+
+		_, err := (&clusterpkg.KubeconfigReconciler{Client: c}).Reconcile(test.Ctx, ctrl.Request{NamespacedName: key})
+		Expect(err).NotTo(HaveOccurred())
+
+		clusterKubeconfig := v1alpha1.ClusterKubeconfig{}
+		Expect(c.Get(test.Ctx, key, &clusterKubeconfig)).To(Succeed())
+		Expect(clusterKubeconfig.Status.Conditions.IsReadyTrue()).To(BeTrue())
+		Expect(clusterKubeconfig.Spec.Kubeconfig.Clusters).To(HaveLen(1))
+		Expect(clusterKubeconfig.Spec.Kubeconfig.Clusters[0].Cluster.Server).To(Equal(apiServerURL))
+		Expect(clusterKubeconfig.Spec.Kubeconfig.Clusters[0].Cluster.CertificateAuthorityData).To(Equal([]byte(caCert)))
 	})
 })

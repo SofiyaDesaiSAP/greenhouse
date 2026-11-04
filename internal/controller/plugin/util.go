@@ -70,6 +70,7 @@ func initClientGetter(
 	k8sClient client.Client,
 	kubeClientOpts []clientutil.KubeClientOption,
 	plugin *greenhousev1alpha1.Plugin,
+	workloadIdentityEnabled bool,
 ) (genericclioptions.RESTClientGetter, *greenhousev1alpha1.Cluster, error) {
 
 	// early return if spec.clusterName is not set
@@ -107,6 +108,14 @@ func initClientGetter(
 		return nil, nil, err
 	}
 
+	payloadSchedulable := cluster.Status.GetConditionByType(greenhousev1alpha1.PayloadSchedulable)
+	if payloadSchedulable != nil && payloadSchedulable.IsFalse() {
+		err = fmt.Errorf("cluster %s payload is not schedulable: %s", plugin.Spec.ClusterName, payloadSchedulable.Message)
+		plugin.SetCondition(greenhousemetav1alpha1.FalseCondition(
+			greenhousev1alpha1.HelmReleaseCreatedCondition, greenhousev1alpha1.ClusterPayloadNotSchedulableReason, err.Error()))
+		return nil, nil, err
+	}
+
 	secret := corev1.Secret{}
 	err = k8sClient.Get(ctx, types.NamespacedName{Namespace: plugin.Namespace, Name: plugin.Spec.ClusterName}, &secret)
 	if err != nil {
@@ -115,7 +124,12 @@ func initClientGetter(
 			greenhousev1alpha1.HelmReleaseCreatedCondition, greenhousev1alpha1.ClusterAccessFailedReason, err.Error()))
 		return nil, nil, err
 	}
-	restClientGetter, err := clientutil.NewRestClientGetterFromSecret(&secret, plugin.Spec.ReleaseNamespace, kubeClientOpts...)
+	var restClientGetter genericclioptions.RESTClientGetter
+	if workloadIdentityEnabled && cluster.Annotations[greenhouseapis.ClusterConnectivityAnnotation] == greenhouseapis.ClusterConnectivityOIDC {
+		restClientGetter, err = clientutil.NewRestClientGetterForWI(ctx, k8sClient, &secret, plugin.Spec.ReleaseNamespace, kubeClientOpts...)
+	} else {
+		restClientGetter, err = clientutil.NewRestClientGetterFromSecret(&secret, plugin.Spec.ReleaseNamespace, kubeClientOpts...)
+	}
 	if err != nil {
 		err = fmt.Errorf("cannot access cluster %s: %w", plugin.Spec.ClusterName, err)
 		plugin.SetCondition(greenhousemetav1alpha1.FalseCondition(

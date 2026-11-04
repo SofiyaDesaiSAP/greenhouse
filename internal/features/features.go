@@ -16,16 +16,18 @@ import (
 )
 
 const (
-	DexFeatureKey          = "dex"
-	PluginFeatureKey       = "plugin"
-	PluginPresetFeatureKey = "pluginPreset"
+	DexFeatureKey              = "dex"
+	PluginFeatureKey           = "plugin"
+	PluginPresetFeatureKey     = "pluginPreset"
+	WorkloadIdentityFeatureKey = "workloadIdentity"
 )
 
 type Features struct {
-	raw          map[string]string
-	dex          *dexFeatures          `yaml:"dex"`
-	plugin       *pluginFeatures       `yaml:"plugin"`
-	pluginPreset *pluginPresetFeatures `yaml:"pluginPreset"`
+	raw              map[string]string
+	dex              *dexFeatures              `yaml:"dex"`
+	plugin           *pluginFeatures           `yaml:"plugin"`
+	pluginPreset     *pluginPresetFeatures     `yaml:"pluginPreset"`
+	workloadIdentity *workloadIdentityFeatures `yaml:"workloadIdentity"`
 }
 
 type dexFeatures struct {
@@ -38,6 +40,11 @@ type pluginFeatures struct {
 
 type pluginPresetFeatures struct {
 	ExpressionEvaluationEnabled bool `yaml:"expressionEvaluationEnabled"`
+	IntegrationEnabled          bool `yaml:"integrationEnabled"`
+}
+
+type workloadIdentityFeatures struct {
+	Enabled bool `yaml:"enabled"`
 }
 
 func NewFeatures(ctx context.Context, k8sClient client.Reader, configMapName, namespace string) (*Features, error) {
@@ -126,6 +133,24 @@ func (f *Features) IsPresetExpressionEvaluationEnabled() bool {
 	return f.pluginPreset.ExpressionEvaluationEnabled
 }
 
+// IsPresetIntegrationEnabled returns whether ValueFrom.Ref resolution
+// is enabled in the PluginPreset controller.
+// Returns false as default.
+func (f *Features) IsPresetIntegrationEnabled() bool {
+	if f == nil {
+		return false
+	}
+
+	if f.pluginPreset != nil {
+		return f.pluginPreset.IntegrationEnabled
+	}
+	if err := f.resolvePluginPresetFeatures(); err != nil {
+		ctrl.LoggerFrom(context.Background()).Error(err, "failed to resolve pluginPreset features")
+		return false
+	}
+	return f.pluginPreset.IntegrationEnabled
+}
+
 // IsOCIMirroringEnabled returns whether OCI mirroring is enabled.
 func (f *Features) IsOCIMirroringEnabled() bool {
 	if f == nil {
@@ -140,4 +165,28 @@ func (f *Features) IsOCIMirroringEnabled() bool {
 		return false
 	}
 	return f.plugin.OCIMirroringEnabled
+}
+
+func (f *Features) resolveWorkloadIdentityFeatures() error {
+	workloadIdentity, err := resolve[workloadIdentityFeatures](f, WorkloadIdentityFeatureKey)
+	if err != nil {
+		return err
+	}
+	f.workloadIdentity = workloadIdentity
+	return nil
+}
+
+func (f *Features) IsWorkloadIdentityEnabled() bool {
+	if f == nil {
+		return false
+	}
+
+	if f.workloadIdentity != nil {
+		return f.workloadIdentity.Enabled
+	}
+	if err := f.resolveWorkloadIdentityFeatures(); err != nil {
+		ctrl.LoggerFrom(context.Background()).Error(err, "failed to resolve workloadIdentity features")
+		return false
+	}
+	return f.workloadIdentity.Enabled
 }

@@ -10,8 +10,10 @@ import (
 
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/cloudoperators/greenhouse/internal/clientutil"
+	greenhouseconfig "github.com/cloudoperators/greenhouse/internal/config"
 	"github.com/cloudoperators/greenhouse/internal/controller/catalog"
 	clustercontrollers "github.com/cloudoperators/greenhouse/internal/controller/cluster"
 	organizationcontrollers "github.com/cloudoperators/greenhouse/internal/controller/organization"
@@ -20,18 +22,19 @@ import (
 	teamcontrollers "github.com/cloudoperators/greenhouse/internal/controller/team"
 	teamrbaccontrollers "github.com/cloudoperators/greenhouse/internal/controller/teamrbac"
 	dexstore "github.com/cloudoperators/greenhouse/internal/dex"
+	"github.com/cloudoperators/greenhouse/internal/features"
 )
 
 // knownControllers contains all controllers to be registered when starting the operator.
 var knownControllers = map[string]func(controllerName string, mgr ctrl.Manager) error{
 	// Organization controllers.
-	"organizationController": startOrganizationReconciler,
+	"organization": startOrganizationReconciler,
 
 	// Team controllers.
-	"teamController": (&teamcontrollers.TeamController{}).SetupWithManager,
+	"team": startTeamReconciler,
 
 	// Team RBAC controllers.
-	"teamRoleBindingController": (&teamrbaccontrollers.TeamRoleBindingReconciler{}).SetupWithManager,
+	"teamRoleBinding": startTeamRoleBindingReconciler,
 
 	// Plugin controllers.
 	"plugin":       startPluginReconciler,
@@ -42,9 +45,9 @@ var knownControllers = map[string]func(controllerName string, mgr ctrl.Manager) 
 	"clusterPluginDefinition": startClusterPluginDefinitionReconciler,
 
 	// Cluster controllers
-	"bootstrap":  (&clustercontrollers.BootstrapReconciler{}).SetupWithManager,
+	"bootstrap":  startBootstrapReconciler,
 	"cluster":    startClusterReconciler,
-	"kubeconfig": (&clustercontrollers.KubeconfigReconciler{}).SetupWithManager,
+	"kubeconfig": startKubeconfigReconciler,
 }
 
 // knownControllers lists the name of known controllers.
@@ -65,9 +68,24 @@ func isControllerEnabled(controllerName string) bool {
 	return controllerName == "*" || slices.Contains(enabledControllers, controllerName)
 }
 
-// startOrganizationReconciler - initializes the organization reconciler
-// resolves dex storage backend from greenhouse-feature-flags
-// initializes the dex storage adapter interface in the organization reconciler
+func startTeamReconciler(name string, mgr ctrl.Manager) error {
+	return (&teamcontrollers.TeamController{
+		MaxConcurrentReconciles: managerConfig.GetMaxConcurrentReconciles(name, 1),
+	}).SetupWithManager(name, mgr)
+}
+
+func startTeamRoleBindingReconciler(name string, mgr ctrl.Manager) error {
+	return (&teamrbaccontrollers.TeamRoleBindingReconciler{
+		MaxConcurrentReconciles: managerConfig.GetMaxConcurrentReconciles(name, 1),
+	}).SetupWithManager(name, mgr)
+}
+
+func startKubeconfigReconciler(name string, mgr ctrl.Manager) error {
+	return (&clustercontrollers.KubeconfigReconciler{
+		MaxConcurrentReconciles: managerConfig.GetMaxConcurrentReconciles(name, 1),
+	}).SetupWithManager(name, mgr)
+}
+
 func startOrganizationReconciler(name string, mgr ctrl.Manager) error {
 	namespace := clientutil.GetEnvOrDefault(podNamespaceEnv, defaultPodNamespace)
 	backend := ptr.To(dexstore.K8s)
@@ -83,28 +101,36 @@ func startOrganizationReconciler(name string, mgr ctrl.Manager) error {
 // startPluginReconciler initializes the plugin reconciler.
 func startPluginReconciler(name string, mgr ctrl.Manager) error {
 	return (&plugincontrollers.PluginReconciler{
-		KubeRuntimeOpts:     kubeClientOpts,
-		OCIMirroringEnabled: featureFlags.IsOCIMirroringEnabled(),
-		StoragePath:         artifactStoragePath,
-		HTTPRetry:           artifactRetries,
+		KubeRuntimeOpts:         kubeClientOpts,
+		OCIMirroringEnabled:     featureFlags.IsOCIMirroringEnabled(),
+		StoragePath:             artifactStoragePath,
+		HTTPRetry:               artifactRetries,
+		MaxConcurrentReconciles: managerConfig.GetMaxConcurrentReconciles(name, 10),
+		WorkloadIdentityEnabled: featureFlags.IsWorkloadIdentityEnabled(),
+		FeatureFlagsName:        clientutil.GetEnvOrDefault(featureFlagsEnv, defaultFeatureFlagConfigMapName),
+		FeatureFlagsNamespace:   clientutil.GetEnvOrDefault(podNamespaceEnv, defaultPodNamespace),
 	}).SetupWithManager(name, mgr)
 }
 
 func startPluginPresetReconciler(name string, mgr ctrl.Manager) error {
 	return (&plugincontrollers.PluginPresetReconciler{
+		MaxConcurrentReconciles:     managerConfig.GetMaxConcurrentReconciles(name, 1),
 		ExpressionEvaluationEnabled: featureFlags.IsPresetExpressionEvaluationEnabled(),
+		IntegrationEnabled:          featureFlags.IsPresetIntegrationEnabled(),
 	}).SetupWithManager(name, mgr)
 }
 
 func startPluginDefinitionReconciler(name string, mgr ctrl.Manager) error {
 	return (&plugindefinitioncontroller.PluginDefinitionReconciler{
-		OCIMirroringEnabled: featureFlags.IsOCIMirroringEnabled(),
+		MaxConcurrentReconciles: managerConfig.GetMaxConcurrentReconciles(name, 1),
+		OCIMirroringEnabled:     featureFlags.IsOCIMirroringEnabled(),
 	}).SetupWithManager(name, mgr)
 }
 
 func startClusterPluginDefinitionReconciler(name string, mgr ctrl.Manager) error {
 	return (&plugindefinitioncontroller.ClusterPluginDefinitionReconciler{
-		OCIMirroringEnabled: featureFlags.IsOCIMirroringEnabled(),
+		MaxConcurrentReconciles: managerConfig.GetMaxConcurrentReconciles(name, 1),
+		OCIMirroringEnabled:     featureFlags.IsOCIMirroringEnabled(),
 	}).SetupWithManager(name, mgr)
 }
 
@@ -117,13 +143,67 @@ func startClusterReconciler(name string, mgr ctrl.Manager) error {
 	return (&clustercontrollers.RemoteClusterReconciler{
 		RemoteClusterBearerTokenValidity:   remoteClusterBearerTokenValidity,
 		RenewRemoteClusterBearerTokenAfter: renewRemoteClusterBearerTokenAfter,
+		MaxConcurrentReconciles:            managerConfig.GetMaxConcurrentReconciles(name, 5),
+		WorkloadIdentityEnabled:            featureFlags.IsWorkloadIdentityEnabled(),
+		FeatureFlagsName:                   clientutil.GetEnvOrDefault(featureFlagsEnv, defaultFeatureFlagConfigMapName),
+		FeatureFlagsNamespace:              clientutil.GetEnvOrDefault(podNamespaceEnv, defaultPodNamespace),
+	}).SetupWithManager(name, mgr)
+}
+
+func startBootstrapReconciler(name string, mgr ctrl.Manager) error {
+	return (&clustercontrollers.BootstrapReconciler{
+		MaxConcurrentReconciles: managerConfig.GetMaxConcurrentReconciles(name, 1),
+		WorkloadIdentityEnabled: featureFlags.IsWorkloadIdentityEnabled(),
+		FeatureFlagsName:        clientutil.GetEnvOrDefault(featureFlagsEnv, defaultFeatureFlagConfigMapName),
+		FeatureFlagsNamespace:   clientutil.GetEnvOrDefault(podNamespaceEnv, defaultPodNamespace),
 	}).SetupWithManager(name, mgr)
 }
 
 func startCatalogReconciler(name string, mgr ctrl.Manager) error {
 	return (&catalog.CatalogReconciler{
-		Log:         ctrl.Log.WithName("controllers").WithName("catalogs"),
-		StoragePath: artifactStoragePath,
-		HTTPRetry:   artifactRetries,
+		Log:                     ctrl.Log.WithName("controllers").WithName("catalogs"),
+		StoragePath:             artifactStoragePath,
+		HTTPRetry:               artifactRetries,
+		MaxConcurrentReconciles: managerConfig.GetMaxConcurrentReconciles(name, 5),
 	}).SetupWithManager(name, mgr)
+}
+
+// setupFeatureFlags initializes the feature gates from the feature-flags config map.
+func setupFeatureFlags(k8sClient client.Reader) {
+	var err error
+	featureFlags, err = features.NewFeatures(
+		context.TODO(),
+		k8sClient,
+		clientutil.GetEnvOrDefault(featureFlagsEnv, defaultFeatureFlagConfigMapName),
+		clientutil.GetEnvOrDefault(podNamespaceEnv, defaultPodNamespace),
+	)
+	handleError(err, "unable to get features")
+}
+
+// runControllers initializes feature flags and the manager config, then registers all enabled controllers.
+func runControllers(mgr ctrl.Manager) {
+	// extract the manager API Client Reader
+	// Note: mgr.GetClient() will fail here because the cache is not ready yet
+	k8sClient := mgr.GetAPIReader()
+
+	setupFeatureFlags(k8sClient)
+
+	var err error
+	managerConfig, err = greenhouseconfig.NewManagerConfig(
+		context.TODO(),
+		k8sClient,
+		clientutil.GetEnvOrDefault(managerConfigEnv, "greenhouse-cm"),
+		clientutil.GetEnvOrDefault(podNamespaceEnv, defaultPodNamespace),
+	)
+	if err != nil {
+		handleError(err, "unable to get manager config")
+	}
+	for controllerName, hookFunc := range knownControllers {
+		if !isControllerEnabled(controllerName) {
+			setupLog.Info("skipping controller", "name", controllerName)
+			continue
+		}
+		setupLog.Info("registering controller", "name", controllerName)
+		handleError(hookFunc(controllerName, mgr), "unable to create controller", "name", controllerName)
+	}
 }
