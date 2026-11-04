@@ -1,3 +1,7 @@
+# Load version pins from versions.env (same file the CI workflow uses).
+# Variables already set in the environment take precedence (?= semantics).
+-include versions.env
+
 GREENHOUSE_VERSION        ?= 0.23.0
 GREENHOUSE_IMAGE_REF      ?= ghcr.io/cloudoperators/greenhouse:v0.18.0
 DASHBOARD_IMAGE_REF       ?= ghcr.io/cloudoperators/juno-app-greenhouse@sha256:ae366951d37198d05d6b3d5859dec8181530d380ea7b9a8a8cfc5a8f07937631

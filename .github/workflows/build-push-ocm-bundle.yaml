@@ -28,6 +28,7 @@ on:
       - 'ocm/deploy/kro-rgd.yaml'
       - 'charts/greenhouse/Chart.yaml'
       - 'ocm/Makefile.ocm'
+      - 'ocm/versions.env'
 
 permissions:
   contents: read
@@ -35,15 +36,10 @@ permissions:
   id-token: write   # required for keyless Sigstore OIDC signing
 
 env:
-  # Prerequisite component versions — bump here when upgrading bootstrap tools.
-  CERT_MANAGER_VERSION: "1.20.1"
-  FLUX_VERSION: "2.15.0"
-  KRO_VERSION: "0.9.4"
-  OCM_CONTROLLER_VERSION: "0.19.1"
-  # Default dashboard image (separate release cadence from the greenhouse binary).
-  # Override via workflow_dispatch input when releasing a new dashboard version.
-  DASHBOARD_IMAGE_REF_DEFAULT: "ghcr.io/cloudoperators/juno-app-greenhouse@sha256:ae366951d37198d05d6b3d5859dec8181530d380ea7b9a8a8cfc5a8f07937631"
-  OCM_VERSION: "v0.48.0"
+  # Tool versions and image refs are stored in ocm/versions.env.
+  # Each job loads that file in its first step. Only workflow-level
+  # defaults that cannot live in a file are set here.
+  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
 jobs:
 
@@ -55,6 +51,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4
+
+      - name: Load versions
+        run: grep -v '^#' ocm/versions.env | grep -v '^$' >> $GITHUB_ENV
 
       - name: Install yq
         run: |
@@ -150,6 +149,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4
+
+      - name: Load versions
+        run: grep -v '^#' ocm/versions.env | grep -v '^$' >> $GITHUB_ENV
 
       - name: Install OCM CLI
         run: |
