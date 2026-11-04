@@ -325,7 +325,7 @@ helm upgrade --install kro /tmp/kro-chart.tgz \
 
 <img width="548" height="87" alt="image" src="https://github.com/user-attachments/assets/a8a44991-54f5-42c2-acdf-f93b50e80929" />
 
-
+<img width="526" height="158" alt="image" src="https://github.com/user-attachments/assets/9e17980b-2046-46ad-878f-10511767b79b" />
 
 
 ### Step 3 — Grant helm-controller RBAC
