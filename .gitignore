@@ -55,6 +55,7 @@ ocm/architecture-changes-review-status.md
 ocm/review-comments-sprint-backlog.md
 ocmgreen-kubeconfig.yaml
 kubeconfig-for-shoot.yaml
+green2-kubeconfig.yaml
 
 # act artifacts needed for testing workflows
 .secrets
