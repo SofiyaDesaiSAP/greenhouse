@@ -144,7 +144,7 @@ ocm add componentversions \
   OCM_CONTROLLER_VERSION=0.19.1
 ```
 
-<img width="991" height="719" alt="Screenshot 2026-10-12 at 16 44 47" src="https://github.com/user-attachments/assets/3132b50d-87ef-4c55-92f3-2e060d948807" />
+<img width="1135" height="752" alt="image" src="https://github.com/user-attachments/assets/1c24d62a-9e5c-4ddc-9fd2-914efd8f84cc" />
 
 
 ### Step 3 — Push CTF to central registry
