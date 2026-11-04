@@ -34,12 +34,15 @@ SIG_ALGORITHM      ?= sigstore-v2
 # Mirrored Sigstore trust root for air-gapped verification (produced out-of-band).
 SIGSTORE_TUF_CACHE ?= sigstore-tuf-cache.tgz
 # RBSC (on-site / air-gapped) registry — target of the transfer step.
-RBSC_REGISTRY      ?= ghcr.io/sofiyadesaisap/greenhouse-rbsc
+RBSC_REGISTRY      ?= ghcr.io/cloudoperators/greenhouse-rbsc
+# Prerequisites bundle registry (separate from the greenhouse product bundle on ghcr.io).
+PREREQS_OCM_REGISTRY ?= ghcr.io/cloudoperators/greenhouse-prerequisites
 
 KC := KUBECONFIG=$(SHOOT_KUBECONFIG)
 
 .PHONY: all help dep-update build build-greenhouse build-prerequisites build-all \
-        push push-prerequisites push-all verify trigger-workflow deploy-apply \
+        push push-prerequisites push-all verify verify-greenhouse verify-prerequisites \
+        trigger-workflow deploy-apply \
         deploy-instance clean \
         bootstrap-flux install-kro install-cert-manager install-ocm-controller grant-helm-rbac \
         install-prometheus-crds install-flux-extension-stubs \
@@ -63,8 +66,9 @@ help:
 	@echo "  make build-greenhouse    - build product-only CTF (greenhouse-component.yaml)"
 	@echo "  make build-prerequisites - build ops CTF (greenhouse-prerequisites-component.yaml)"
 	@echo "  make build-all           - build both CTFs sequentially"
-	@echo "  make push           - push CTF to OCM_REGISTRY=$(OCM_REGISTRY)"
-	@echo "  make verify         - inspect component versions in local archive"
+	@echo "  make verify         - inspect greenhouse bundle (2 components)"
+	@echo "  make verify-greenhouse    - same as verify"
+	@echo "  make verify-prerequisites - inspect prerequisites bundle (5 components)"
 	@echo ""
 	@echo "── Signing (keyless / sigstore — see keyless-signing-discussion.md) ──"
 	@echo "  make sign-sigstore    - sign the OCM component version (keyless, browser login)"
@@ -80,27 +84,29 @@ help:
 	@echo "  make load-sigstore-root - load mirrored TUF trust root for offline verify"
 	@echo ""
 	@echo "── Cluster bootstrap (fresh cluster, run once) ───────────────────────"
-	@echo "  make bootstrap-flux         - install Flux controllers on cluster"
-	@echo "  make install-ocm-controller - install OCM controller via helm"
+	@echo "  make bootstrap-flux         - install Flux controllers (connected: flux install; air-gapped: see comment)"
+	@echo "  make install-kro            - install kro (connected: registry.k8s.io; air-gapped: see comment)"
+	@echo "  make install-ocm-controller - OCM controller installed via GreenhouseBootstrap; see target for details"
 	@echo "  make grant-helm-rbac        - grant helm-controller cluster-admin RBAC"
 	@echo "  make install-prometheus-crds - install prometheus-operator CRDs"
 	@echo "  make install-flux-extension-stubs - install Flux extension stub CRDs (required by greenhouse v0.16.1+)"
 	@echo ""
 	@echo "── Secrets and namespace ─────────────────────────────────────────────"
 	@echo "  make create-greenhouse-ns   - create greenhouse namespace"
-	@echo "  make create-registry-secret - create ghcr registry creds secret"
+	@echo "  make create-registry-secret - create ghcr registry creds secret (skipped if GITHUB_TOKEN unset)"
 	@echo "  make create-values-secret   - create greenhouse values secret (reads greenhouse-values.yaml)"
-	@echo "  make copy-tls-secret        - copy OCM TLS cert from ocm-system → greenhouse"
+	@echo "  make copy-tls-secret        - OBSOLETE (new OCM controller has no in-cluster registry)"
 	@echo ""
 	@echo "── Deploy manifests ──────────────────────────────────────────────────"
-	@echo "  make deploy-apply   - kubectl apply -k deploy/ (ComponentVersion + Resources + Deployer)"
+	@echo "  make deploy-apply   - kubectl apply -k deploy/ (kro RGDs + namespace)"
 	@echo "  make deploy-instance - wait for GreenhouseStack CRD, apply instance.yaml"
-	@echo "  make deploy-status  - show all OCM + Flux object statuses"
+	@echo "  make deploy-status  - show OCM Repository/Component/Resource + Flux statuses"
 	@echo "  make deploy-watch   - watch HelmRelease reconciliation live"
 	@echo "  make deploy-reconcile - force immediate reconciliation of all HelmReleases"
+	@echo "  make snapshot-urls  - show OCIRepository + Resource status (replaces old snapshot-urls)"
 	@echo ""
 	@echo "── Troubleshoot ──────────────────────────────────────────────────────"
-	@echo "  make flux-fix APP=<name>  - recover stuck HelmRelease (cert-manager|ocm-controller|greenhouse)"
+	@echo "  make flux-fix APP=<name>  - recover stuck HelmRelease (cert-manager|ocm-k8s-toolkit|greenhouse)"
 	@echo ""
 	@echo "── Full deploy (fresh cluster, all steps in order) ───────────────────"
 	@echo "  make deploy-full    - bootstrap + secrets + apply + instance (requires GITHUB_TOKEN)"
@@ -209,7 +215,7 @@ push-prerequisites: greenhouse-prerequisites-bundle.ctf
 	  --overwrite \
 	  --copy-resources \
 	  greenhouse-prerequisites-bundle.ctf \
-	  oci://$(OCM_REGISTRY)
+	  oci://$(PREREQS_OCM_REGISTRY)
 
 push-all: push push-prerequisites
 
@@ -225,19 +231,26 @@ trigger-workflow:
 	@echo "Workflow triggered. Watch progress:"
 	@echo "  gh run watch --repo $(GITHUB_USER)/greenhouse \$$(gh run list --repo $(GITHUB_USER)/greenhouse --workflow=push-ocm-bundle.yaml --limit=1 --json databaseId -q '.[0].databaseId')"
 
-# Verify all component versions are present in the local archive
-verify: greenhouse-bundle.ctf
+# Verify greenhouse product bundle (2 components: root + core)
+verify: verify-greenhouse
+
+verify-greenhouse: greenhouse-bundle.ctf
 	ocm get componentversion --repo directory::./greenhouse-bundle.ctf \
 	  github.com/cloudoperators/greenhouse:$(GREENHOUSE_VERSION)
 	ocm get componentversion --repo directory::./greenhouse-bundle.ctf \
 	  github.com/cloudoperators/greenhouse/core:$(GREENHOUSE_VERSION)
-	ocm get componentversion --repo directory::./greenhouse-bundle.ctf \
+
+# Verify prerequisites bundle (5 components: root + cert-manager, flux, kro, ocm-controller)
+verify-prerequisites: greenhouse-prerequisites-bundle.ctf
+	ocm get componentversion --repo directory::./greenhouse-prerequisites-bundle.ctf \
+	  github.com/cloudoperators/greenhouse-prerequisites:$(OCM_CONTROLLER_VERSION)
+	ocm get componentversion --repo directory::./greenhouse-prerequisites-bundle.ctf \
 	  github.com/cloudoperators/greenhouse/prerequisites/cert-manager:$(CERT_MANAGER_VERSION)
-	ocm get componentversion --repo directory::./greenhouse-bundle.ctf \
+	ocm get componentversion --repo directory::./greenhouse-prerequisites-bundle.ctf \
 	  github.com/cloudoperators/greenhouse/prerequisites/flux:$(FLUX_VERSION)
-	ocm get componentversion --repo directory::./greenhouse-bundle.ctf \
+	ocm get componentversion --repo directory::./greenhouse-prerequisites-bundle.ctf \
 	  github.com/cloudoperators/greenhouse/prerequisites/kro:$(KRO_VERSION)
-	ocm get componentversion --repo directory::./greenhouse-bundle.ctf \
+	ocm get componentversion --repo directory::./greenhouse-prerequisites-bundle.ctf \
 	  github.com/cloudoperators/greenhouse/prerequisites/ocm-controller:$(OCM_CONTROLLER_VERSION)
 
 # =======================================================================
@@ -321,16 +334,16 @@ print-image-digests:
 # cluster and the registry are always in sync.
 # Requires: yq v4+ (https://github.com/mikefarah/yq)
 patch-instance:
-	@echo "Reading image digests from RBSC for github.com/cloudoperators/greenhouse/core:$(GREENHOUSE_VERSION)..."
+	@echo "Reading image digests from on-site registry for github.com/cloudoperators/greenhouse/core:$(GREENHOUSE_VERSION)..."
 	$(eval DIGESTS_JSON := $(shell ocm get resources \
-	  "oci://$(RBSC_REGISTRY)//github.com/cloudoperators/greenhouse/core:$(GREENHOUSE_VERSION)" \
+	  "oci://$(OCM_REGISTRY)//github.com/cloudoperators/greenhouse/core:$(GREENHOUSE_VERSION)" \
 	  -o json 2>/dev/null))
 	$(eval GH_DIGEST := $(shell echo '$(DIGESTS_JSON)' | \
 	  jq -r '.items[].element | select(.name=="greenhouse-image") | "sha256:" + .digest.value' 2>/dev/null))
 	$(eval DB_DIGEST := $(shell echo '$(DIGESTS_JSON)' | \
 	  jq -r '.items[].element | select(.name=="dashboard-image") | "sha256:" + .digest.value' 2>/dev/null))
-	@test -n "$(GH_DIGEST)" || (echo "ERROR: could not read greenhouse-image digest from RBSC. Run 'make transfer-rbsc' first."; exit 1)
-	@test -n "$(DB_DIGEST)" || (echo "ERROR: could not read dashboard-image digest from RBSC."; exit 1)
+	@test -n "$(GH_DIGEST)" || (echo "ERROR: could not read greenhouse-image digest. Set OCM_REGISTRY to point to the on-site registry."; exit 1)
+	@test -n "$(DB_DIGEST)" || (echo "ERROR: could not read dashboard-image digest."; exit 1)
 	@echo "  greenhouse-image: $(GH_DIGEST)"
 	@echo "  dashboard-image:  $(DB_DIGEST)"
 	yq -i '.spec.greenhouseImageDigest = "$(GH_DIGEST)"' deploy/instance.yaml
@@ -396,19 +409,19 @@ deploy-instance:
 	$(KC) kubectl apply -f deploy/instance.yaml
 	@echo "GreenhouseStack instance applied. kro will now create OCIRepositories + HelmReleases."
 
-# Print Snapshot URLs from a live cluster — use these to update deploy/instance.yaml
-# after bumping chart versions and pushing a new bundle.
+# Print OCIRepository and Resource status from the new architecture.
+# (snapshot-urls was the old equivalent — Snapshots are gone in the new OCM controller)
 snapshot-urls:
-	@echo "Snapshot → URL mapping (paste paths into deploy/instance.yaml):"
+	@echo "OCIRepository → URL mapping (new architecture — no Snapshots):"
 	@echo ""
-	@$(KC) kubectl get snapshot -n greenhouse \
-		-o custom-columns='RESOURCE:.metadata.ownerReferences[0].name,REPO:.status.repositoryURL,TAG:.status.tag' \
-		2>/dev/null || echo "(no snapshots found — apply ComponentVersion + Resource CRs first)"
-	@echo ""
-	@echo "OCIRepository spec.url values (oci:// form used by Flux):"
 	@$(KC) kubectl get ocirepository -n greenhouse \
-		-o custom-columns='NAME:.metadata.name,URL:.spec.url,TAG:.spec.ref.tag' \
-		2>/dev/null || echo "(no OCIRepositories yet)"
+		-o custom-columns='NAME:.metadata.name,URL:.spec.url,REF:.spec.ref.tag' \
+		2>/dev/null || echo "(no OCIRepositories yet — apply GreenhouseStack instance first)"
+	@echo ""
+	@echo "OCM Resource status (OCI URLs populated by OCM controller):"
+	@$(KC) kubectl get resource -n greenhouse \
+		-o custom-columns='NAME:.metadata.name,READY:.status.conditions[0].status,OCI:.status.additional.oci' \
+		2>/dev/null || echo "(no Resources yet)"
 
 clean:
 	rm -rf greenhouse-bundle.ctf
@@ -427,18 +440,18 @@ clean-cluster:
 	-$(KC) kubectl delete greenhousestack --all -n greenhouse --ignore-not-found 2>/dev/null || true
 	-$(KC) kubectl delete resourcegraphdefinition greenhouse-stack -n greenhouse --ignore-not-found 2>/dev/null || true
 	@echo ""
-	@echo "── OCM manifests (ComponentVersion + Resources + Deployer) ──────"
+	@echo "── OCM manifests (kro RGDs + namespace) ─────────────────────────"
 	-$(KC) kubectl delete -k deploy/ --ignore-not-found 2>/dev/null || true
 	@echo ""
 	@echo "── Helm releases ────────────────────────────────────────────────"
 	-$(KC) helm uninstall greenhouse       -n greenhouse  2>/dev/null || true
-	-$(KC) helm uninstall ocm-controller   -n ocm-system  2>/dev/null || true
+	-$(KC) helm uninstall ocm-k8s-toolkit  -n ocm-k8s-toolkit-system 2>/dev/null || true
 	-$(KC) helm uninstall cert-manager     -n cert-manager 2>/dev/null || true
 	-$(KC) helm uninstall kro              -n kro-system   2>/dev/null || true
 	-$(KC) helm uninstall prometheus-crds  -n monitoring   2>/dev/null || true
 	@echo ""
 	@echo "── Namespaces (waits for deletion) ──────────────────────────────"
-	@for ns in greenhouse cert-manager ocm-system flux-system kro-system monitoring \
+	@for ns in greenhouse cert-manager ocm-k8s-toolkit-system flux-system kro-system monitoring \
 	           monsoon3 vault external-secrets; do \
 	  $(KC) kubectl delete namespace $$ns --ignore-not-found 2>/dev/null && \
 	    echo "  deleted: $$ns" || true; \
@@ -454,15 +467,11 @@ clean-cluster:
 	  orders.acme.cert-manager.io \
 	  --ignore-not-found 2>/dev/null || true
 	@echo ""
-	@echo "── OCM controller CRDs ──────────────────────────────────────────"
+	@echo "── OCM k8s toolkit CRDs ──────────────────────────────────────────"
 	-$(KC) kubectl delete crd \
-	  componentdescriptors.delivery.ocm.software \
-	  componentversions.delivery.ocm.software \
-	  configurations.delivery.ocm.software \
-	  fluxdeployers.delivery.ocm.software \
-	  localizations.delivery.ocm.software \
+	  components.delivery.ocm.software \
+	  repositories.delivery.ocm.software \
 	  resources.delivery.ocm.software \
-	  snapshots.delivery.ocm.software \
 	  --ignore-not-found 2>/dev/null || true
 	@echo ""
 	@echo "── Flux CRDs ────────────────────────────────────────────────────"
@@ -501,8 +510,12 @@ clean-cluster:
 # -----------------------------------------------------------------------
 
 # Install Flux controllers (source, helm, kustomize, notification)
+# Connected cluster: uses `flux install` (internet access required).
+# Air-gapped cluster: download flux-install.yaml from the OCM prereqs bundle instead:
+#   ocm download resources --repo oci://<ON_SITE_REGISTRY>/greenhouse-prerequisites \
+#     github.com/cloudoperators/greenhouse/prerequisites/flux:<FLUX_VERSION> \
+#     flux-install -O /tmp/flux-install.yaml && kubectl apply -f /tmp/flux-install.yaml
 # Skips reinstall if helm-controller is already running — safe to call on a live cluster.
-# To force a clean reinstall: kubectl delete namespace flux-system first.
 bootstrap-flux:
 	@if $(KC) kubectl get deployment helm-controller -n flux-system >/dev/null 2>&1; then \
 		echo "Flux already installed — skipping reinstall."; \
@@ -515,6 +528,11 @@ bootstrap-flux:
 	fi
 
 # Install kro (Kubernetes Resource Orchestrator)
+# Connected cluster: installs directly from registry.k8s.io (internet access required).
+# Air-gapped cluster: download kro chart from the OCM prereqs bundle instead:
+#   ocm download resources --repo oci://<ON_SITE_REGISTRY>/greenhouse-prerequisites \
+#     github.com/cloudoperators/greenhouse/prerequisites/kro:<KRO_VERSION> \
+#     kro-chart -O /tmp/kro-chart.tgz && helm upgrade --install kro /tmp/kro-chart.tgz ...
 # kro must be running before the RGD can be processed — bootstrap once, manually.
 install-kro:
 	@echo "Installing kro v$(KRO_VERSION)..."
@@ -541,32 +559,18 @@ install-cert-manager:
 			--wait --timeout 5m; \
 	fi
 
-# Install OCM controller via helm
-# Skips install if ocm-controller deployment already exists — safe to call on a live cluster.
-# cert-manager is installed first as a prerequisite.
-install-ocm-controller: install-cert-manager
-	@if $(KC) kubectl get deployment ocm-controller -n ocm-system >/dev/null 2>&1; then \
-		echo "OCM controller already running — skipping install."; \
-	else \
-		echo "Installing OCM controller v$(OCM_CONTROLLER_VERSION)..."; \
-		$(KC) helm upgrade --install ocm-controller \
-			oci://ghcr.io/open-component-model/helm/ocm-controller \
-			--namespace ocm-system \
-			--create-namespace \
-			--version v$(OCM_CONTROLLER_VERSION) \
-			--set tlsCert.generateTlsCert=true \
-			--wait --timeout 5m; \
-		echo "OCM controller installed. Waiting for TLS secret creation..."; \
-		for i in $$(seq 1 30); do \
-			$(KC) kubectl get secret ocm-registry-tls-certs -n ocm-system >/dev/null 2>&1 && \
-				echo "TLS secret exists." && break; \
-			echo "Waiting for ocm-registry-tls-certs ($${i}/30)..."; \
-			sleep 5; \
-		done; \
-	fi
+# Install OCM controller (ocm-k8s-toolkit) via GreenhouseBootstrap kro RGD.
+# The new OCM controller (open-component-model/kubernetes/controller/chart v0.19.1)
+# is installed by kro when you apply the GreenhouseBootstrap instance, not directly.
+# Prerequisites: deploy-apply (registers the GreenhouseBootstrap CRD via kro).
+# To install: make deploy-apply && make deploy-instance-bootstrap
+install-ocm-controller:
+	@echo "OCM controller is installed via the GreenhouseBootstrap kro RGD."
+	@echo "Run: make deploy-apply && make deploy-instance-bootstrap"
+	@echo "(direct Helm install with the old chart is no longer supported)"
 
 # Grant helm-controller cluster-admin so it can install CRDs and ClusterRoles
-# (required for cert-manager, kro, ocm-controller installs via FluxDeployer)
+# (required for cert-manager, kro, ocm-k8s-toolkit installs via OCIRepository/HelmRelease)
 grant-helm-rbac:
 	@echo "Granting helm-controller cluster-admin RBAC..."
 	$(KC) kubectl create clusterrolebinding helm-controller-cluster-admin \
@@ -634,17 +638,21 @@ create-greenhouse-ns:
 	$(KC) kubectl create namespace greenhouse --dry-run=client -o yaml | \
 		$(KC) kubectl apply -f -
 
-# Create docker-registry secret for pulling OCM bundle from ghcr.io
-# Requires: GITHUB_TOKEN env var to be set
+# Create docker-registry secret for pulling OCM bundle from ghcr.io.
+# Optional: when GITHUB_TOKEN is unset, prints a warning and skips creation.
+# Keppel repos (keppel.global.cloud.sap) allow anonymous pulls — no secret needed.
 create-registry-secret:
-	@test -n "$(GITHUB_TOKEN)" || (echo "Error: GITHUB_TOKEN env var not set"; exit 1)
-	@echo "Creating greenhouse-ocm-registry-creds secret in greenhouse namespace..."
-	$(KC) kubectl create secret docker-registry greenhouse-ocm-registry-creds \
-		--namespace greenhouse \
-		--docker-server=ghcr.io \
-		--docker-username=$(GITHUB_USER) \
-		--docker-password=$(GITHUB_TOKEN) \
-		--dry-run=client -o yaml | $(KC) kubectl apply -f -
+	@if [ -z "$(GITHUB_TOKEN)" ]; then \
+		echo "GITHUB_TOKEN not set — skipping registry secret creation (anonymous pull assumed)"; \
+	else \
+		echo "Creating greenhouse-ocm-registry-creds secret in greenhouse namespace..."; \
+		$(KC) kubectl create secret docker-registry greenhouse-ocm-registry-creds \
+			--namespace greenhouse \
+			--docker-server=ghcr.io \
+			--docker-username=$(GITHUB_USER) \
+			--docker-password=$(GITHUB_TOKEN) \
+			--dry-run=client -o yaml | $(KC) kubectl apply -f -; \
+	fi
 
 # Create greenhouse Helm values secret from greenhouse-values.yaml
 # Usage: make create-values-secret (reads greenhouse-values.yaml from this directory)
@@ -656,26 +664,21 @@ create-values-secret:
 		--from-file=values.yaml=greenhouse-values.yaml \
 		--dry-run=client -o yaml | $(KC) kubectl apply -f -
 
-# Copy OCM TLS cert secret from ocm-system → greenhouse namespace
-# Run this after install-ocm-controller and before deploy-apply.
-# The OCM controller creates this secret; FluxDeployer-created OCIRepositories need it.
+# OBSOLETE: copy-tls-secret was required for the old OCM controller (v0.33.0) which
+# ran an internal registry at registry.ocm-system.svc.cluster.local:5000 with a
+# self-signed TLS cert. The new controller (ocm-k8s-toolkit v0.19.1) has no
+# in-cluster registry and needs no TLS cert.
 copy-tls-secret:
-	@echo "Copying OCM TLS cert from ocm-system to greenhouse..."
-	$(KC) kubectl get secret ocm-registry-tls-certs -n ocm-system -o json | \
-		python3 -c "import sys,json; d=json.load(sys.stdin); \
-			d['metadata']={'name':d['metadata']['name'],'namespace':'greenhouse'}; \
-			print(json.dumps(d))" | \
-		$(KC) kubectl apply -f -
+	@echo "copy-tls-secret is obsolete — the new OCM controller (ocm-k8s-toolkit) has no in-cluster registry."
+	@echo "No TLS cert secret is needed. This step is a no-op."
 
 # -----------------------------------------------------------------------
 # Status and watch targets
 # -----------------------------------------------------------------------
 
 deploy-status:
-	@echo "\n── ComponentVersion ──────────────────────────────────────────────────"
-	$(KC) kubectl get componentversion -n greenhouse
-	@echo "\n── Resources ─────────────────────────────────────────────────────────"
-	$(KC) kubectl get resource -n greenhouse
+	@echo "\n── OCM Repositories / Components / Resources ────────────────────────"
+	$(KC) kubectl get repository,component,resource -n greenhouse 2>/dev/null || echo "(no OCM objects yet)"
 	@echo "\n── kro ResourceGraphDefinition ───────────────────────────────────────"
 	$(KC) kubectl get resourcegraphdefinition -n greenhouse 2>/dev/null || echo "(none)"
 	@echo "\n── GreenhouseStack instances ─────────────────────────────────────────"
@@ -686,32 +689,36 @@ deploy-status:
 	$(KC) kubectl get pods -n greenhouse
 	@echo "\n── Pods (cert-manager ns) ────────────────────────────────────────────"
 	$(KC) kubectl get pods -n cert-manager 2>/dev/null || echo "(not installed)"
-	@echo "\n── Pods (ocm-system ns) ──────────────────────────────────────────────"
-	$(KC) kubectl get pods -n ocm-system 2>/dev/null || echo "(not installed)"
+	@echo "\n── Pods (ocm-k8s-toolkit-system ns) ─────────────────────────────────"
+	$(KC) kubectl get pods -n ocm-k8s-toolkit-system 2>/dev/null || echo "(not installed)"
 
 deploy-watch:
 	$(KC) kubectl get helmrelease -n greenhouse -w
 
 deploy-reconcile:
 	@echo "Forcing reconciliation of all HelmReleases in greenhouse namespace..."
-	@for hr in cert-manager ocm-controller greenhouse; do \
+	@for hr in cert-manager ocm-k8s-toolkit greenhouse; do \
 		$(KC) kubectl annotate helmrelease $$hr -n greenhouse \
 			reconcile.fluxcd.io/requestedAt="$$(date -u +%Y-%m-%dT%H:%M:%SZ)" --overwrite \
 			2>/dev/null || true; \
 	done
 
-# Force OCM controller to re-pull bundle from registry and update Snapshots.
+# Force OCM controller to re-pull bundle from registry and update Resources.
 # Use after pushing a new bundle version.
 deploy-reconcile-ocm:
-	@echo "Forcing OCM ComponentVersion + Resource reconciliation..."
-	$(KC) kubectl annotate componentversion greenhouse -n greenhouse \
-		reconcile.fluxcd.io/requestedAt="$$(date -u +%Y-%m-%dT%H:%M:%SZ)" --overwrite
-	@for r in cert-manager-chart kro-chart ocm-controller-chart greenhouse-chart greenhouse-stack-rgd; do \
+	@echo "Forcing OCM Repository / Component / Resource reconciliation..."
+	$(KC) kubectl annotate repository greenhouse -n greenhouse \
+		reconcile.fluxcd.io/requestedAt="$$(date -u +%Y-%m-%dT%H:%M:%SZ)" --overwrite \
+		2>/dev/null || true
+	$(KC) kubectl annotate component greenhouse -n greenhouse \
+		reconcile.fluxcd.io/requestedAt="$$(date -u +%Y-%m-%dT%H:%M:%SZ)" --overwrite \
+		2>/dev/null || true
+	@for r in greenhouse-chart; do \
 		$(KC) kubectl annotate resource $$r -n greenhouse \
 			reconcile.fluxcd.io/requestedAt="$$(date -u +%Y-%m-%dT%H:%M:%SZ)" --overwrite \
 			2>/dev/null || true; \
 	done
-	@echo "OCM will now re-pull the bundle and update Snapshots. Watch with: make deploy-status"
+	@echo "OCM will now re-pull the bundle. Watch with: make deploy-status"
 
 # Recover a stuck HelmRelease.
 # Usage: make flux-fix APP=cert-manager  (or kro, ocm-controller, greenhouse)
@@ -740,8 +747,7 @@ flux-fix:
 # -----------------------------------------------------------------------
 deploy-full: bootstrap-flux install-kro grant-helm-rbac install-prometheus-crds \
              install-flux-extension-stubs \
-             install-ocm-controller create-greenhouse-ns \
-             create-registry-secret copy-tls-secret create-values-secret \
+             create-greenhouse-ns create-registry-secret create-values-secret \
              deploy-apply deploy-instance
 	@echo ""
 	@echo "Full greenhouse OCM+Flux deploy complete."

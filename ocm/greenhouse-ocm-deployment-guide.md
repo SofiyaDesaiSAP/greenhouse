@@ -26,7 +26,7 @@ Two OCM bundles (built once per release):
        └─ core  (greenhouse-chart, greenhouse-image, dashboard-image, kro-rgd)
 
   greenhouse-prereqs-bundle.ctf      ← opt-in, skip if tools already installed
-  └─ github.com/cloudoperators/greenhouse-prerequisites:0.21.0
+  └─ github.com/cloudoperators/greenhouse-prerequisites:0.19.1
        ├─ prerequisites/cert-manager
        ├─ prerequisites/ocm-controller  (open-component-model/kubernetes/controller/chart)
        ├─ prerequisites/flux
@@ -77,6 +77,7 @@ cd /path/to/greenhouse/ocm
 export CENTRAL_REGISTRY=<your-central-registry>         # e.g. ghcr.io/cloudoperators
 # On-site registry — the OCI registry your cluster can reach (air-gap target)
 export ON_SITE_REGISTRY=<your-on-site-registry>         # e.g. registry.example.internal
+# Optional — skip if registry allows anonymous pulls (e.g. keppel.global.cloud.sap)
 export REGISTRY_USER=<your-registry-user>
 export REGISTRY_TOKEN=<your-registry-token>
 export KUBECONFIG=/path/to/cluster-kubeconfig.yaml
@@ -119,6 +120,16 @@ ocm add componentversions \
 
 **Opt-in — prerequisites bundle** *(skip if cert-manager, Flux, kro, OCM controller are already installed):*
 
+Before building, download the kro chart — it is embedded as a raw file blob in the bundle
+(not fetched at build time the way OCI-sourced charts are):
+
+```bash
+helm pull oci://registry.k8s.io/kro/charts/kro \
+  --version $KRO_VERSION \
+  --destination .
+mv kro-$KRO_VERSION.tgz kro-chart.tgz
+```
+
 ```bash
 rm -rf greenhouse-prereqs-bundle.ctf
 
@@ -130,7 +141,7 @@ ocm add componentversions \
   CERT_MANAGER_VERSION=1.20.1 \
   FLUX_VERSION=2.15.0 \
   KRO_VERSION=0.9.4 \
-  OCM_CONTROLLER_VERSION=0.21.0
+  OCM_CONTROLLER_VERSION=0.19.1
 ```
 
 <img width="991" height="719" alt="Screenshot 2026-10-12 at 16 44 47" src="https://github.com/user-attachments/assets/3132b50d-87ef-4c55-92f3-2e060d948807" />
@@ -238,7 +249,7 @@ Verify the prerequisites bundle (if transferred):
 
 ```bash
 ocm get componentversions \
-  "oci://$ON_SITE_REGISTRY//github.com/cloudoperators/greenhouse-prerequisites:0.21.0" \
+  "oci://$ON_SITE_REGISTRY//github.com/cloudoperators/greenhouse-prerequisites:0.19.1" \
   --recursive
 ```
 
@@ -246,11 +257,11 @@ Expected output — 5 components:
 
 ```
 REFERENCEPATH                                                     COMPONENT                                                         VERSION PROVIDER
-                                                                  github.com/cloudoperators/greenhouse-prerequisites                0.21.0  cloudoperators
-github.com/cloudoperators/greenhouse-prerequisites:0.21.0         github.com/cloudoperators/greenhouse/prerequisites/cert-manager   1.20.1  cloudoperators
-github.com/cloudoperators/greenhouse-prerequisites:0.21.0         github.com/cloudoperators/greenhouse/prerequisites/flux           2.15.0  cloudoperators
-github.com/cloudoperators/greenhouse-prerequisites:0.21.0         github.com/cloudoperators/greenhouse/prerequisites/kro            0.9.4   cloudoperators
-github.com/cloudoperators/greenhouse-prerequisites:0.21.0         github.com/cloudoperators/greenhouse/prerequisites/ocm-controller 0.21.0  cloudoperators
+                                                                  github.com/cloudoperators/greenhouse-prerequisites                0.19.1  cloudoperators
+github.com/cloudoperators/greenhouse-prerequisites:0.19.1         github.com/cloudoperators/greenhouse/prerequisites/cert-manager   1.20.1  cloudoperators
+github.com/cloudoperators/greenhouse-prerequisites:0.19.1         github.com/cloudoperators/greenhouse/prerequisites/flux           2.15.0  cloudoperators
+github.com/cloudoperators/greenhouse-prerequisites:0.19.1         github.com/cloudoperators/greenhouse/prerequisites/kro            0.9.4   cloudoperators
+github.com/cloudoperators/greenhouse-prerequisites:0.19.1         github.com/cloudoperators/greenhouse/prerequisites/ocm-controller 0.19.1  cloudoperators
 ```
 
 
@@ -260,37 +271,48 @@ github.com/cloudoperators/greenhouse-prerequisites:0.21.0         github.com/clo
 
 > Flux and kro are the only direct Helm installs. Everything else goes through kro.
 
+> **Automated deploy:** `ocm/deploy-cluster.sh` runs all steps below in order — air-gap capable.
+> Required: `KUBECONFIG`, `ON_SITE_REGISTRY`, `GREENHOUSE_VALUES_YAML`.
+> Optional: `REGISTRY_USER`, `REGISTRY_TOKEN` (omit for anonymous-pull registries).
+> The manual steps below are for reference and demo narration.
+
 ### Step 1 — Install Flux
 
+Flux is downloaded from the OCM prerequisites bundle — no internet access required at deploy time.
+
 ```bash
-flux install
+export FLUX_VERSION=2.15.0   # must match the version embedded in the prereqs bundle
+
+ocm download resources \
+  --repo "oci://${ON_SITE_REGISTRY}/greenhouse-prerequisites" \
+  "github.com/cloudoperators/greenhouse/prerequisites/flux:${FLUX_VERSION}" \
+  flux-install \
+  -O /tmp/flux-install.yaml
+
+kubectl apply -f /tmp/flux-install.yaml
 
 kubectl rollout status deploy/source-controller -n flux-system --timeout=120s
 kubectl rollout status deploy/helm-controller   -n flux-system --timeout=120s
 ```
 
-<img width="725" height="63" alt="image" src="https://github.com/user-attachments/assets/3bdd9425-5ea1-4f89-b23e-21f24402f835" />
-
 ### Step 2 — Install kro
 
+kro is downloaded from the OCM prerequisites bundle — no internet access required at deploy time.
+
 ```bash
-helm upgrade --install kro \
-  oci://registry.k8s.io/kro/charts/kro \
+export KRO_VERSION=0.9.4   # must match the version embedded in the prereqs bundle
+
+ocm download resources \
+  --repo "oci://${ON_SITE_REGISTRY}/greenhouse-prerequisites" \
+  "github.com/cloudoperators/greenhouse/prerequisites/kro:${KRO_VERSION}" \
+  kro-chart \
+  -O /tmp/kro-chart.tgz
+
+helm upgrade --install kro /tmp/kro-chart.tgz \
   --namespace kro-system \
   --create-namespace \
-  --version 0.9.4 \
   --wait --timeout 5m
 ```
-
-Expected output:
-
-```
-Release "kro" does not exist. Installing it now.
-...
-STATUS: deployed
-```
-
-<img width="454" height="46" alt="image" src="https://github.com/user-attachments/assets/4f69cc9a-e795-4df3-b50b-17e232665f52" />
 
 
 ### Step 3 — Grant helm-controller RBAC
@@ -305,26 +327,21 @@ kubectl create clusterrolebinding helm-controller-cluster-admin \
 ### Step 4 — Create namespace and registry secret
 
 The registry secret authenticates OCIRepository and OCM Component pulls from the on-site registry.
+Skip if your registry allows anonymous pulls (e.g. `keppel.global.cloud.sap` repos are public).
 
 ```bash
 kubectl create namespace greenhouse --dry-run=client -o yaml | kubectl apply -f -
 
-kubectl create secret docker-registry greenhouse-ocm-registry-creds \
-  --namespace greenhouse \
-  --docker-server=<your-registry-server> \
-  --docker-username=$REGISTRY_USER \
-  --docker-password=$REGISTRY_TOKEN \
-  --dry-run=client -o yaml | kubectl apply -f -
+# Only needed when the registry requires authentication:
+if [[ -n "${REGISTRY_TOKEN}" ]]; then
+  kubectl create secret docker-registry greenhouse-ocm-registry-creds \
+    --namespace greenhouse \
+    --docker-server=<your-registry-server> \
+    --docker-username=$REGISTRY_USER \
+    --docker-password=$REGISTRY_TOKEN \
+    --dry-run=client -o yaml | kubectl apply -f -
+fi
 ```
-
-Expected output:
-
-```
-namespace/greenhouse configured
-secret/greenhouse-ocm-registry-creds configured
-```
-
-<img width="676" height="90" alt="image" src="https://github.com/user-attachments/assets/6a19b88a-962e-4b40-bc95-1454a51e5c3c" />
 
 
 ### Step 5 — Apply kro RGDs
