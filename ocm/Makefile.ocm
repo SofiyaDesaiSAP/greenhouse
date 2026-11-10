@@ -247,7 +247,7 @@ verify-greenhouse: greenhouse-bundle.ctf
 # Verify prerequisites bundle (5 components: root + cert-manager, flux, kro, ocm-controller)
 verify-prerequisites: prerequisites-bundle.ctf
 	ocm get componentversion --repo directory::./prerequisites-bundle.ctf \
-	  github.com/cloudoperators/greenhouse-prerequisites:$(OCM_CONTROLLER_VERSION)
+	  github.com/cloudoperators/prerequisites:$(OCM_CONTROLLER_VERSION)
 	ocm get componentversion --repo directory::./prerequisites-bundle.ctf \
 	  github.com/cloudoperators/greenhouse/prerequisites/cert-manager:$(CERT_MANAGER_VERSION)
 	ocm get componentversion --repo directory::./prerequisites-bundle.ctf \

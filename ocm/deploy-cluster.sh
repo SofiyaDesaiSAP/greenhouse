@@ -30,7 +30,7 @@
 #   FLUX_VERSION               Must match version in the prereqs OCM bundle.
 #                              Set by the build workflow at bundle-build time (dynamic resolution).
 #                              Check the bundle: ocm get resources --repo oci://<PREREQS_BUNDLE_REGISTRY> \
-#                                github.com/cloudoperators/greenhouse-prerequisites:... -o json
+#                                github.com/cloudoperators/prerequisites:... -o json
 #   KRO_VERSION                Must match version in the prereqs OCM bundle (default: 0.9.4)
 #   PREREQS_BUNDLE_REGISTRY    Where the prerequisites OCM bundle was pushed.
 #                              ghcr.io (default): ${ON_SITE_REGISTRY}/prerequisites
@@ -103,7 +103,7 @@ ok "Cluster reachable"
 step "Discovering prereqs versions from on-site registry"
 PREREQS_REFS=$(ocm get componentversion \
     --repo "oci://${PREREQS_BUNDLE_REGISTRY}" \
-    "github.com/cloudoperators/greenhouse-prerequisites" \
+    "github.com/cloudoperators/prerequisites" \
     -o json 2>/dev/null \
   | jq -r '.items[0].component.componentReferences[]' 2>/dev/null || echo "")
 

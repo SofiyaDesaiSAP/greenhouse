@@ -26,7 +26,7 @@ Two OCM bundles (built once per release):
        └─ core  (greenhouse-chart, greenhouse-image, dashboard-image, kro-rgd)
 
   prerequisites-bundle.ctf      ← opt-in, skip if tools already installed
-  └─ github.com/cloudoperators/greenhouse-prerequisites:0.19.1
+  └─ github.com/cloudoperators/prerequisites:0.19.1
        ├─ prerequisites/cert-manager
        ├─ prerequisites/ocm-controller  (open-component-model/kubernetes/controller/chart)
        ├─ prerequisites/flux
@@ -257,7 +257,7 @@ Verify the prerequisites bundle (if transferred):
 
 ```bash
 ocm get componentversions \
-  "oci://$ON_SITE_REGISTRY/prerequisites//github.com/cloudoperators/greenhouse-prerequisites:$OCM_CONTROLLER_VERSION" \
+  "oci://$ON_SITE_REGISTRY/prerequisites//github.com/cloudoperators/prerequisites:$OCM_CONTROLLER_VERSION" \
   --recursive
 ```
 
@@ -265,11 +265,11 @@ Expected output — 5 components:
 
 ```
 REFERENCEPATH                                                     COMPONENT                                                         VERSION PROVIDER
-                                                                  github.com/cloudoperators/greenhouse-prerequisites                0.19.1  cloudoperators
-github.com/cloudoperators/greenhouse-prerequisites:0.19.1         github.com/cloudoperators/greenhouse/prerequisites/cert-manager   1.20.1  cloudoperators
-github.com/cloudoperators/greenhouse-prerequisites:0.19.1         github.com/cloudoperators/greenhouse/prerequisites/flux           2.15.0  cloudoperators
-github.com/cloudoperators/greenhouse-prerequisites:0.19.1         github.com/cloudoperators/greenhouse/prerequisites/kro            0.9.4   cloudoperators
-github.com/cloudoperators/greenhouse-prerequisites:0.19.1         github.com/cloudoperators/greenhouse/prerequisites/ocm-controller 0.19.1  cloudoperators
+                                                                  github.com/cloudoperators/prerequisites                0.19.1  cloudoperators
+github.com/cloudoperators/prerequisites:0.19.1         github.com/cloudoperators/greenhouse/prerequisites/cert-manager   1.20.1  cloudoperators
+github.com/cloudoperators/prerequisites:0.19.1         github.com/cloudoperators/greenhouse/prerequisites/flux           2.15.0  cloudoperators
+github.com/cloudoperators/prerequisites:0.19.1         github.com/cloudoperators/greenhouse/prerequisites/kro            0.9.4   cloudoperators
+github.com/cloudoperators/prerequisites:0.19.1         github.com/cloudoperators/greenhouse/prerequisites/ocm-controller 0.19.1  cloudoperators
 ```
 
 

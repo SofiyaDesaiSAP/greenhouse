@@ -3,7 +3,7 @@
 # OCM Component Descriptor — Greenhouse prerequisites (ops/air-gapped, opt-in)
 #
 # Contains cert-manager, flux, kro, and ocm-controller as separate OCM components,
-# bundled under a single github.com/cloudoperators/greenhouse-prerequisites root.
+# bundled under a single github.com/cloudoperators/prerequisites root.
 #
 # This bundle is intentionally separate from the greenhouse product component so that
 # consumers who already manage prerequisites through other means (e.g. their own Flux
@@ -119,7 +119,7 @@ components:
   # -------------------------------------------------------------------------
   # Top-level prerequisites bundle — references all 4 prerequisites
   # -------------------------------------------------------------------------
-  - name: github.com/cloudoperators/greenhouse-prerequisites
+  - name: github.com/cloudoperators/prerequisites
     version: ${OCM_CONTROLLER_VERSION}
     provider:
       name: cloudoperators
