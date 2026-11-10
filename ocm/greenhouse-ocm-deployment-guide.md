@@ -25,7 +25,7 @@ Two OCM bundles (built once per release):
   └─ github.com/cloudoperators/greenhouse:0.23.0
        └─ core  (greenhouse-chart, greenhouse-image, dashboard-image, kro-rgd)
 
-  greenhouse-prereqs-bundle.ctf      ← opt-in, skip if tools already installed
+  prerequisites-bundle.ctf      ← opt-in, skip if tools already installed
   └─ github.com/cloudoperators/greenhouse-prerequisites:0.19.1
        ├─ prerequisites/cert-manager
        ├─ prerequisites/ocm-controller  (open-component-model/kubernetes/controller/chart)
@@ -73,10 +73,14 @@ Cluster (air-gapped at runtime — all pulls from on-site registry):
 ```bash
 cd /path/to/greenhouse/ocm
 
-# Central registry — where your signed OCM bundles live
-export CENTRAL_REGISTRY=<your-central-registry>         # e.g. ghcr.io/cloudoperators
+# Central registry — where your signed OCM bundles live (JFrog Artifactory)
+# SAP internal JFrog: int.repositories.cloud.sap/<your-repo>
+# GitHub (connected/dev): ghcr.io/cloudoperators
+export CENTRAL_REGISTRY=common.repositories.cloud.sap/greenhouse-ocm
 # On-site registry — the OCI registry your cluster can reach (air-gap target)
-export ON_SITE_REGISTRY=<your-on-site-registry>         # e.g. registry.example.internal
+# SAP internal Artifactory: int.repositories.cloud.sap/<your-repo>
+# GitHub (connected/dev):   ghcr.io/cloudoperators
+export ON_SITE_REGISTRY=int.repositories.cloud.sap/greenhouse-ocm
 # Optional — skip if registry allows anonymous pulls (e.g. keppel.global.cloud.sap)
 export REGISTRY_USER=<your-registry-user>
 export REGISTRY_TOKEN=<your-registry-token>
@@ -131,13 +135,13 @@ mv kro-$KRO_VERSION.tgz kro-chart.tgz
 ```
 
 ```bash
-rm -rf greenhouse-prereqs-bundle.ctf
+rm -rf prerequisites-bundle.ctf
 
 ocm add componentversions \
   --addenv \
-  --file greenhouse-prereqs-bundle.ctf \
+  --file prerequisites-bundle.ctf \
   --create \
-  greenhouse-prerequisites-component.yaml \
+  prerequisites-component.yaml \
   CERT_MANAGER_VERSION=1.20.1 \
   FLUX_VERSION=2.15.0 \
   KRO_VERSION=0.9.4 \
@@ -226,7 +230,7 @@ If you built the prerequisites bundle, transfer it too:
 ```bash
 REGISTRY_TOKEN=$REGISTRY_TOKEN ocm transfer ctf \
   --copy-resources \
-  greenhouse-prereqs-bundle.ctf \
+  prerequisites-bundle.ctf \
   oci://$ON_SITE_REGISTRY
 ```
 
@@ -253,7 +257,7 @@ Verify the prerequisites bundle (if transferred):
 
 ```bash
 ocm get componentversions \
-  "oci://$ON_SITE_REGISTRY//github.com/cloudoperators/greenhouse-prerequisites:0.19.1" \
+  "oci://$ON_SITE_REGISTRY/prerequisites//github.com/cloudoperators/greenhouse-prerequisites:$OCM_CONTROLLER_VERSION" \
   --recursive
 ```
 
@@ -288,7 +292,7 @@ Flux is downloaded from the OCM prerequisites bundle — no internet access requ
 export FLUX_VERSION=2.15.0   # must match the version embedded in the prereqs bundle
 
 ocm download resources \
-  --repo "oci://${ON_SITE_REGISTRY}/greenhouse-prerequisites" \
+  --repo "oci://${ON_SITE_REGISTRY}/prerequisites" \
   "github.com/cloudoperators/greenhouse/prerequisites/flux:${FLUX_VERSION}" \
   flux-install \
   -O /tmp/flux-install.yaml
@@ -312,7 +316,7 @@ kro is downloaded from the OCM prerequisites bundle — no internet access requi
 export KRO_VERSION=0.9.4   # must match the version embedded in the prereqs bundle
 
 ocm download resources \
-  --repo "oci://${ON_SITE_REGISTRY}/greenhouse-prerequisites" \
+  --repo "oci://${ON_SITE_REGISTRY}/prerequisites" \
   "github.com/cloudoperators/greenhouse/prerequisites/kro:${KRO_VERSION}" \
   kro-chart \
   -O /tmp/kro-chart.tgz

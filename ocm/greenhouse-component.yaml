@@ -4,7 +4,7 @@
 #
 # Contains only the greenhouse stack: chart, images, and the kro RGD.
 # Does NOT bundle prerequisites (cert-manager, flux, kro, ocm-controller).
-# For the ops/air-gapped prerequisites bundle use greenhouse-prerequisites-component.yaml.
+# For the ops/air-gapped prerequisites bundle use prerequisites-component.yaml.
 #
 # Variables:
 #   GREENHOUSE_VERSION    - greenhouse app version, e.g. 0.23.0

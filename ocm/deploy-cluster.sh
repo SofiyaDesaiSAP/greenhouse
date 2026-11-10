@@ -33,7 +33,7 @@
 #                                github.com/cloudoperators/greenhouse-prerequisites:... -o json
 #   KRO_VERSION                Must match version in the prereqs OCM bundle (default: 0.9.4)
 #   PREREQS_BUNDLE_REGISTRY    Where the prerequisites OCM bundle was pushed.
-#                              ghcr.io (default): ${ON_SITE_REGISTRY}/greenhouse-prerequisites
+#                              ghcr.io (default): ${ON_SITE_REGISTRY}/prerequisites
 #                              Single registry (e.g. Keppel): set to ${ON_SITE_REGISTRY}
 #   GH_BUNDLE_REGISTRY         Where the greenhouse OCM bundle was pushed.
 #                              ghcr.io (default): ${ON_SITE_REGISTRY}/greenhouse
@@ -53,7 +53,7 @@ REGISTRY_TOKEN="${REGISTRY_TOKEN:-}"
 
 # Two separate bundle registries (ghcr.io uses distinct repos per bundle;
 # a single on-site registry like Keppel stores both under the same base URL).
-PREREQS_BUNDLE_REGISTRY="${PREREQS_BUNDLE_REGISTRY:-${ON_SITE_REGISTRY}/greenhouse-prerequisites}"
+PREREQS_BUNDLE_REGISTRY="${PREREQS_BUNDLE_REGISTRY:-${ON_SITE_REGISTRY}/prerequisites}"
 GH_BUNDLE_REGISTRY="${GH_BUNDLE_REGISTRY:-${ON_SITE_REGISTRY}/greenhouse}"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────

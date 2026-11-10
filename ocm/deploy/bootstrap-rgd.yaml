@@ -99,7 +99,7 @@ spec:
             namespace: greenhouse
 
     # ── cert-manager ─────────────────────────────────────────────────────
-    # Pulled from the on-site registry. Path derived from greenhouse-prerequisites-component.yaml:
+    # Pulled from the on-site registry. Path derived from prerequisites-component.yaml:
     #   access.type: ociArtifact
     #   imageReference: ghcr.io/cloudoperators/greenhouse-extensions/charts/cert-manager:${version}
     # --copy-resources strips the source host and writes the blob to:
@@ -144,7 +144,7 @@ spec:
             installCRDs: true
 
     # ── OCM controller (open-component-model v0.21.0+) ────────────────────
-    # Pulled from the on-site registry. Path derived from greenhouse-prerequisites-component.yaml:
+    # Pulled from the on-site registry. Path derived from prerequisites-component.yaml:
     #   access.type: ociArtifact
     #   imageReference: ghcr.io/open-component-model/kubernetes/controller/chart:${version}
     # --copy-resources strips the source host and writes the blob to:

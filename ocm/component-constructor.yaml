@@ -3,7 +3,7 @@
 # DEPRECATED: This file bundles greenhouse + all prerequisites into one component.
 # Use the split files instead:
 #   greenhouse-component.yaml               — product only (open-source)
-#   greenhouse-prerequisites-component.yaml — ops/air-gapped prerequisites (opt-in)
+#   prerequisites-component.yaml — ops/air-gapped prerequisites (opt-in)
 # Retained here for backward-compatible single-bundle builds (make build).
 #
 # OCM Component Descriptor for Greenhouse (combined bundle)

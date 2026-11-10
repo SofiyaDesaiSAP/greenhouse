@@ -2,7 +2,7 @@ name: Build and Push OCM Bundles
 
 # Builds and signs two OCM bundles:
 #   1. greenhouse-bundle          (greenhouse chart + images — open-source default)
-#   2. greenhouse-prereqs-bundle  (cert-manager, Flux, kro, OCM controller — opt-in)
+#   2. prerequisites-bundle       (cert-manager, Flux, kro, OCM controller — opt-in)
 #
 # Both bundles are pushed to ghcr.io/cloudoperators (no --overwrite; artifacts are
 # content-addressed and immutable — re-pushing the same version is a no-op via
@@ -24,7 +24,7 @@ on:
       - main
     paths:
       - 'ocm/greenhouse-component.yaml'
-      - 'ocm/greenhouse-prerequisites-component.yaml'
+      - 'ocm/prerequisites-component.yaml'
       - 'ocm/deploy/kro-rgd.yaml'
       - 'charts/greenhouse/Chart.yaml'
       - 'ocm/Makefile.ocm'
@@ -194,9 +194,9 @@ jobs:
         run: |
           ocm add componentversions \
             --addenv \
-            --file prereqs-bundle.ctf \
+            --file prerequisites-bundle.ctf \
             --create \
-            greenhouse-prerequisites-component.yaml \
+            prerequisites-component.yaml \
             CERT_MANAGER_VERSION=${{ env.CERT_MANAGER_VERSION }} \
             FLUX_VERSION=${{ env.FLUX_VERSION }} \
             KRO_VERSION=${{ env.KRO_VERSION }} \
@@ -215,8 +215,8 @@ jobs:
           OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
           ocm transfer ctf \
             --copy-resources \
-            prereqs-bundle.ctf \
-            oci://ghcr.io/${OWNER}/greenhouse-prerequisites
+            prerequisites-bundle.ctf \
+            oci://ghcr.io/${OWNER}/prerequisites
 
       - name: Sign prerequisites component (keyless Sigstore)
         working-directory: ocm
@@ -226,7 +226,7 @@ jobs:
             --keyless \
             --signature greenhouse-release \
             --algorithm sigstore-v2 \
-            --repo oci://ghcr.io/${OWNER}/greenhouse-prerequisites \
+            --repo oci://ghcr.io/${OWNER}/prerequisites \
             github.com/cloudoperators/greenhouse-prerequisites:${{ env.OCM_CONTROLLER_VERSION }}
 
       - name: Verify prerequisites bundle
@@ -234,11 +234,11 @@ jobs:
         run: |
           OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
           ocm get componentversion \
-            --repo oci://ghcr.io/${OWNER}/greenhouse-prerequisites \
+            --repo oci://ghcr.io/${OWNER}/prerequisites \
             github.com/cloudoperators/greenhouse-prerequisites:${{ env.OCM_CONTROLLER_VERSION }}
           ocm get componentversion \
-            --repo oci://ghcr.io/${OWNER}/greenhouse-prerequisites \
+            --repo oci://ghcr.io/${OWNER}/prerequisites \
             github.com/cloudoperators/greenhouse/prerequisites/cert-manager:${{ env.CERT_MANAGER_VERSION }}
           ocm get componentversion \
-            --repo oci://ghcr.io/${OWNER}/greenhouse-prerequisites \
+            --repo oci://ghcr.io/${OWNER}/prerequisites \
             github.com/cloudoperators/greenhouse/prerequisites/ocm-controller:${{ env.OCM_CONTROLLER_VERSION }}

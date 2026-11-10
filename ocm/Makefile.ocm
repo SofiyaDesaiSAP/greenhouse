@@ -40,7 +40,7 @@ SIGSTORE_TUF_CACHE ?= sigstore-tuf-cache.tgz
 # RBSC (on-site / air-gapped) registry — target of the transfer step.
 RBSC_REGISTRY      ?= ghcr.io/cloudoperators/greenhouse-rbsc
 # Prerequisites bundle registry (separate from the greenhouse product bundle on ghcr.io).
-PREREQS_OCM_REGISTRY ?= ghcr.io/cloudoperators/greenhouse-prerequisites
+PREREQS_OCM_REGISTRY ?= ghcr.io/cloudoperators/prerequisites
 
 KC := KUBECONFIG=$(SHOOT_KUBECONFIG)
 
@@ -68,7 +68,7 @@ help:
 	@echo "                        Run once on a fresh checkout; safe to re-run"
 	@echo "  make build          - build combined CTF (greenhouse + prerequisites) — backward compat"
 	@echo "  make build-greenhouse    - build product-only CTF (greenhouse-component.yaml)"
-	@echo "  make build-prerequisites - build ops CTF (greenhouse-prerequisites-component.yaml)"
+	@echo "  make build-prerequisites - build ops CTF (prerequisites-component.yaml)"
 	@echo "  make build-all           - build both CTFs sequentially"
 	@echo "  make verify         - inspect greenhouse bundle (2 components)"
 	@echo "  make verify-greenhouse    - same as verify"
@@ -188,12 +188,12 @@ build-prerequisites:
 	  --version $(KRO_VERSION) \
 	  --destination .
 	mv kro-$(KRO_VERSION).tgz kro-chart.tgz
-	rm -rf greenhouse-prerequisites-bundle.ctf
+	rm -rf prerequisites-bundle.ctf
 	ocm add componentversions \
 	  --addenv \
-	  --file greenhouse-prerequisites-bundle.ctf \
+	  --file prerequisites-bundle.ctf \
 	  --create \
-	  greenhouse-prerequisites-component.yaml \
+	  prerequisites-component.yaml \
 	  CERT_MANAGER_VERSION=$(CERT_MANAGER_VERSION) \
 	  FLUX_VERSION=$(FLUX_RESOLVED) \
 	  KRO_VERSION=$(KRO_VERSION) \
@@ -214,11 +214,11 @@ push: greenhouse-bundle.ctf
 	  greenhouse-bundle.ctf \
 	  oci://$(OCM_REGISTRY)
 
-push-prerequisites: greenhouse-prerequisites-bundle.ctf
+push-prerequisites: prerequisites-bundle.ctf
 	GITHUB_TOKEN=$(GITHUB_TOKEN) ocm transfer ctf \
 	  --overwrite \
 	  --copy-resources \
-	  greenhouse-prerequisites-bundle.ctf \
+	  prerequisites-bundle.ctf \
 	  oci://$(PREREQS_OCM_REGISTRY)
 
 push-all: push push-prerequisites
@@ -245,16 +245,16 @@ verify-greenhouse: greenhouse-bundle.ctf
 	  github.com/cloudoperators/greenhouse/core:$(GREENHOUSE_VERSION)
 
 # Verify prerequisites bundle (5 components: root + cert-manager, flux, kro, ocm-controller)
-verify-prerequisites: greenhouse-prerequisites-bundle.ctf
-	ocm get componentversion --repo directory::./greenhouse-prerequisites-bundle.ctf \
+verify-prerequisites: prerequisites-bundle.ctf
+	ocm get componentversion --repo directory::./prerequisites-bundle.ctf \
 	  github.com/cloudoperators/greenhouse-prerequisites:$(OCM_CONTROLLER_VERSION)
-	ocm get componentversion --repo directory::./greenhouse-prerequisites-bundle.ctf \
+	ocm get componentversion --repo directory::./prerequisites-bundle.ctf \
 	  github.com/cloudoperators/greenhouse/prerequisites/cert-manager:$(CERT_MANAGER_VERSION)
-	ocm get componentversion --repo directory::./greenhouse-prerequisites-bundle.ctf \
+	ocm get componentversion --repo directory::./prerequisites-bundle.ctf \
 	  github.com/cloudoperators/greenhouse/prerequisites/flux:$(FLUX_VERSION)
-	ocm get componentversion --repo directory::./greenhouse-prerequisites-bundle.ctf \
+	ocm get componentversion --repo directory::./prerequisites-bundle.ctf \
 	  github.com/cloudoperators/greenhouse/prerequisites/kro:$(KRO_VERSION)
-	ocm get componentversion --repo directory::./greenhouse-prerequisites-bundle.ctf \
+	ocm get componentversion --repo directory::./prerequisites-bundle.ctf \
 	  github.com/cloudoperators/greenhouse/prerequisites/ocm-controller:$(OCM_CONTROLLER_VERSION)
 
 # =======================================================================
@@ -516,7 +516,7 @@ clean-cluster:
 # Install Flux controllers (source, helm, kustomize, notification)
 # Connected cluster: uses `flux install` (internet access required).
 # Air-gapped cluster: download flux-install.yaml from the OCM prereqs bundle instead:
-#   ocm download resources --repo oci://<ON_SITE_REGISTRY>/greenhouse-prerequisites \
+#   ocm download resources --repo oci://<ON_SITE_REGISTRY>/prerequisites \
 #     github.com/cloudoperators/greenhouse/prerequisites/flux:<FLUX_VERSION> \
 #     flux-install -O /tmp/flux-install.yaml && kubectl apply -f /tmp/flux-install.yaml
 # Skips reinstall if helm-controller is already running — safe to call on a live cluster.
@@ -534,7 +534,7 @@ bootstrap-flux:
 # Install kro (Kubernetes Resource Orchestrator)
 # Connected cluster: installs directly from registry.k8s.io (internet access required).
 # Air-gapped cluster: download kro chart from the OCM prereqs bundle instead:
-#   ocm download resources --repo oci://<ON_SITE_REGISTRY>/greenhouse-prerequisites \
+#   ocm download resources --repo oci://<ON_SITE_REGISTRY>/prerequisites \
 #     github.com/cloudoperators/greenhouse/prerequisites/kro:<KRO_VERSION> \
 #     kro-chart -O /tmp/kro-chart.tgz && helm upgrade --install kro /tmp/kro-chart.tgz ...
 # kro must be running before the RGD can be processed — bootstrap once, manually.
